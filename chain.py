@@ -12,9 +12,10 @@ The trench is an ordered chain of cells from the closed end. Between frames:
     a mask, so a lysed or unseen cell's space is expected to stay, and the column closing
     over it is priced as a jump, not forbidden;
   - no new cells appear after the first frame.
-The masks (S1 only, shapes only, no image) are observations, cleaned first: the bottom
-crop_bottom_px rows (the halo at the trench opening) are removed, and so is any mask shorter
-than the smallest plausible newborn, (div_mu - 3 div_sd) / 2. What is left is: one mask per cell, one cell
+The masks (S1 only, shapes only, no image) are observations, cleaned first: a mask with more
+than half its area in the bottom crop_bottom_px rows (the halo at the trench opening) is
+removed whole, and so is any mask shorter than the smallest plausible newborn,
+(div_mu - 3 div_sd) / 2; the masks kept are kept whole. What is left is: one mask per cell, one cell
 cut into two masks, one mask over two cells. Each frame the predicted chain is aligned to
 the masks in order; a cell is judged by its own length and by the gap between its mask
 and the mask of the last cell above that has one, so errors never build up down the column.
@@ -78,7 +79,7 @@ P = dict(
     side_sigma_y=15.0, side_sigma_area=0.1, side_sigma_x=4.0,   # an off-centre cell between frames
     side_max_cost=16.0,        # ... anything worse is not the same cell (4 sigma)
     exit_visible_px=8,
-    crop_bottom_px=30,         # rows removed at the trench opening, where the halo makes masks unreliable
+    crop_bottom_px=30,         # masks mostly in these bottom rows (the halo at the trench opening) are removed
     max_gap=8,                 # px: an over-cut cell's two masks are joined across a gap up to this
 )
 FITTED = ("growth", "sigma_end", "sigma_gap", "div_mu", "div_sd", "jump_scale_px")
@@ -481,22 +482,25 @@ def visible_end(lab):
 
 
 def clean(lab):
-    """The masks the tracker sees: without the bottom crop_bottom_px rows, and without masks
-    shorter than the smallest plausible newborn, (div_mu - 3 div_sd) / 2."""
+    """The masks the tracker sees: whole masks only, without those that have more than half
+    their area in the bottom crop_bottom_px rows, and without those shorter than the smallest
+    plausible newborn, (div_mu - 3 div_sd) / 2."""
     lab = np.array(lab)
-    lab[:, lab.shape[1] - P["crop_bottom_px"]:] = 0
+    cut = lab.shape[1] - P["crop_bottom_px"]
     shortest = (P["div_mu"] - 3 * P["div_sd"]) / 2
     for f in lab:
         ids = np.unique(f)
         ids = ids[ids > 0]
         if not len(ids):
             continue
-        rows = np.nonzero(f)[0]
-        lo = ndi.minimum(rows, f[np.nonzero(f)], ids)
-        hi = ndi.maximum(rows, f[np.nonzero(f)], ids)
-        small = ids[(np.asarray(hi) - np.asarray(lo) + 1) < shortest]
-        if len(small):
-            f[np.isin(f, small)] = 0
+        rows, cols = np.nonzero(f)
+        which = f[rows, cols]
+        lo = np.asarray(ndi.minimum(rows, which, ids))
+        hi = np.asarray(ndi.maximum(rows, which, ids))
+        below = np.asarray(ndi.mean(rows >= cut, which, ids))
+        drop = ids[((hi - lo + 1) < shortest) | (below > 0.5)]
+        if len(drop):
+            f[np.isin(f, drop)] = 0
     return lab
 
 
