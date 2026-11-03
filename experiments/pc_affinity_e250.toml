@@ -1,0 +1,26 @@
+# chaintrack on the PC Omnipose masks (segmentation/pc_affinity_e250, trenches 0-9). Same stores as
+# cellpose_finetune/experiments/pc_affinity_e250.toml, without its junction-score mask colouring
+# (chaintrack's tracks don't carry that property).
+#
+#     pixi run curate 0 "--experiment external/chaintrack/experiments/pc_affinity_e250.toml"
+#
+# Relative paths are relative to this file's folder.
+
+name = "20261005_pbs_psc_yfp_ty013 · PC affinity e250 · chaintrack"
+nd2 = "../../../raw_data/20261005_pbs_psc_yfp_ty013.nd2"
+trench_store = "../../../20261005_pbs_psc_yfp_ty013.trenches.zarr"
+tracks_store = "../../../20261005_pbs_psc_yfp_ty013.pc_affinity_e250.tracks.zarr"
+curation_store = "../../../20261005_pbs_psc_yfp_ty013.pc_affinity_e250.curation.zarr"
+
+[segmentation]
+channel = "PC"
+name = "pc_affinity_e250"
+trenches = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+[tracking]
+tracker = "chain"
+hypotheses = ["S1"]
+image_channel = "PC"
+
+[curation]
+kymograph_channel = "PC"
