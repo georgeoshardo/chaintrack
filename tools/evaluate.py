@@ -15,7 +15,7 @@ from traccuracy.metrics import CHOTAMetric, CTCMetrics, CompleteTracks, Division
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import score as S
-from pymmm.tracks import read_trench_geff
+from pymmm.store.geff import read_trench_geff
 
 ROOT = Path("/data/phage-signatures")
 STORE = ROOT / "20261005_pbs_psc_yfp_ty013.trenches.zarr"

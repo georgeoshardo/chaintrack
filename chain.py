@@ -29,7 +29,7 @@ Fitted without labels: growth, length noise, gap noise, length at division, jump
 Each segmentation has its own fit (params/<segmentation>.json).
 
 The masks come from the experiment group PyMMM extracts (one OME-Zarr image per trench,
-<experiment>.zarr; see pymmm.trench_images): a trench's segmentation <seg> is its label image
+<experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
 labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base first. `run` writes each trench's tracks
 beside it, as the run <out> (default chain_S1): the GEFF tracks/<out>.geff and the masks it chose,
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
@@ -891,7 +891,7 @@ def stats_of(recs):
 
 
 def fit(trenches, rounds=3):
-    from pymmm.trench_images import open_experiment, segmentation
+    from pymmm.store.experiment_group import open_experiment, segmentation
 
     root = open_experiment(GROUP)
     labs = [clean(l) for l in (np.asarray(segmentation(root, t, SEG)[1][0][...]) for t in trenches) if l.any()]
@@ -922,8 +922,7 @@ def fit(trenches, rounds=3):
 
 
 def write(root, tid, lab, recs, side, frames):
-    from pymmm.tracks import tracklets_and_lineages
-    from pymmm.trench_images import write_tracks
+    from pymmm.store.geff import tracklets_and_lineages, write_tracks
 
     T, H, W = lab.shape
     seg = np.zeros(lab.shape, np.uint16)
@@ -984,7 +983,7 @@ def alternatives(names):
 
 def record_run(root):
     """Note this run (its segmentation and settings) in the experiment group."""
-    from pymmm.trench_images import update_experiment
+    from pymmm.store.experiment_group import update_experiment
 
     update_experiment(root, "tracks", OUT, {
         "tracker": TRACKER, "segmentation": SEG, "params": json.loads(json.dumps(P, default=str)),
@@ -993,7 +992,7 @@ def record_run(root):
 
 
 def run(trenches, root=None):
-    from pymmm.trench_images import open_experiment, segmentation
+    from pymmm.store.experiment_group import open_experiment, segmentation
 
     if root is None:
         root = open_experiment(GROUP, mode="r+")
@@ -1012,7 +1011,7 @@ def run(trenches, root=None):
 def follow(trenches):
     """Track each trench as soon as its segmentation is finished (candidates.py still running),
     until every one is tracked."""
-    from pymmm.trench_images import has_segmentation, open_experiment
+    from pymmm.store.experiment_group import has_segmentation, open_experiment
 
     root = open_experiment(GROUP, mode="r+")
     record_run(root)

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import zarr
 
-from pymmm.tracks import read_trench_geff
+from pymmm.store.geff import read_trench_geff
 
 ROOT = Path("/data/phage-signatures")
 CUR = ROOT / "20261005_pbs_psc_yfp_ty013.curation.zarr/trackastra_S1"

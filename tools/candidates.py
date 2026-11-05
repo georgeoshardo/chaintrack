@@ -2,7 +2,7 @@
 fine-tuned Omnipose model, with segment_pc.py's settings (affinity method, mask threshold 0,
 flow threshold 0.4, min area 1.75 um^2). Each trench of the experiment group PyMMM extracts
 (<experiment>.zarr, one OME-Zarr image per trench) gets one (t, y, x) label image per
-checkpoint, labels/<name>.<hypothesis> (see pymmm.trench_images); a trench's segmentation
+checkpoint, labels/<name>.<hypothesis> (see pymmm.store.experiment_group); a trench's segmentation
 is finished once all of them are listed in its labels/.
 The settings and hypotheses are recorded once, in the experiment group's
 attrs.pymmm.segmentations[<name>]. Only the given trenches are segmented.
@@ -57,7 +57,7 @@ def serve(a):
     under every checkpoint given, and answer "done <trench>" (or "fail <trench> <error>")."""
     import torch
     from cpseg.omni_watch import load_model
-    from pymmm.segmenter import normalise, order_from_closed_end
+    from pymmm.steps.segmentation import normalise, order_from_closed_end
 
     torch.set_num_threads(a.threads)
     pairs = [c.split("=") for c in a.checkpoints.split(",")]
@@ -135,13 +135,13 @@ class Dispatcher:
         self._bounds = {}
 
     def frames(self, ti):
-        from pymmm.trench_images import image
+        from pymmm.store.experiment_group import image
 
         return np.asarray(image(self.root, ti)[:, self.c])
 
     def bounds(self, ti, frames):
         """The trench's (lower, upper) normalisation bounds, from its own frames."""
-        from pymmm.segmenter import trench_bounds
+        from pymmm.steps.segmentation import trench_bounds
 
         with self.lock:
             if ti not in self._bounds:
@@ -161,7 +161,7 @@ class Dispatcher:
                 self.given_up.append(ti)
 
     def finish(self, ti, labels, who):
-        from pymmm.trench_images import write_segmentation
+        from pymmm.store.experiment_group import write_segmentation
 
         with self.lock:
             lo, hi = self._bounds.pop(ti)
@@ -198,10 +198,10 @@ def main():
     if a.cmd == "serve":
         return serve(a)
 
-    from pymmm.provenance import provenance
-    from pymmm.trench_images import calibration, channel_index, has_segmentation, open_experiment
-    from pymmm.trench_images import trench_ids as all_trenches
-    from pymmm.trench_images import update_experiment
+    from pymmm.store.provenance import provenance
+    from pymmm.store.experiment_group import calibration, channel_index, has_segmentation, open_experiment
+    from pymmm.store.experiment_group import trench_ids as all_trenches
+    from pymmm.store.experiment_group import update_experiment
 
     root = open_experiment(a.store, mode="r+")
     use = checkpoints(MODELS, a.min_epoch, a.every)
