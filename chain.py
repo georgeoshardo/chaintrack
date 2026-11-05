@@ -34,7 +34,7 @@ labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base fi
 beside it, as the run <out> (default chain_S1): the GEFF tracks/<out>.geff and the masks it chose,
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
 edit), so re-running replaces tracker output only. `follow` does the same for each trench as soon
-as its segmentation is finished, while tools/candidates.py is still segmenting the others.
+as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is still segmenting the others.
 
     cd /data/phage-signatures
     pixi run -e seg python external/chaintrack/chain.py fit 2-9 --seg pc_affinity_ensemble
@@ -61,7 +61,7 @@ SEG = sys.argv[sys.argv.index("--seg") + 1] if "--seg" in sys.argv else "mcherry
 PARAMS = HERE / "params" / f"{SEG}.json"
 TRACKER = "chain"
 # a segmentation with several hypotheses: the first is the base, the others its alternatives (which
-# checkpoints those are is decided where they are made, tools/candidates.py); --alts e050,e150
+# checkpoints those are is decided in the experiment file's [segmentation]); --alts e050,e150
 # uses only those, --base-only the base alone
 ALTS = sys.argv[sys.argv.index("--alts") + 1].split(",") if "--alts" in sys.argv else None
 BASE_ONLY = "--base-only" in sys.argv
@@ -1009,7 +1009,7 @@ def run(trenches, root=None):
 
 
 def follow(trenches):
-    """Track each trench as soon as its segmentation is finished (candidates.py still running),
+    """Track each trench as soon as its segmentation is finished (the Segmenter still running),
     until every one is tracked."""
     from pymmm.store.experiment_group import has_segmentation, open_experiment
 
