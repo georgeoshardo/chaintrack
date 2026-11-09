@@ -12,18 +12,31 @@ The trench is an ordered chain of cells from the closed end. Between frames:
     a mask, so a lysed or unseen cell's space is expected to stay, and the column closing
     over it is priced as a jump, not forbidden;
   - no new cells appear after the first frame.
-The masks (S1 only, shapes only, no image) are observations, cleaned first: a mask with more
-than half its area in the bottom crop_bottom_px rows (the halo at the trench opening) is
-removed whole, and so is any mask shorter than the smallest plausible newborn,
-(div_mu - 3 div_sd) / 2; the masks kept are kept whole. What is left is: one mask per cell, one cell
+The masks (S1 only, shapes only, no image) are observations, cleaned first: any mask shorter
+than the smallest plausible newborn, (div_mu - 3 div_sd) / 2, is removed whole, and with
+--crop-bottom N so is a mask with more than half its area in the bottom N rows (for crops that
+reach the halo at the trench opening; PyMMM's crops stop above it, so none by default), and
+with --clear-bottom N any mask reaching the bottom N rows (a cell cut off by the crop's edge;
+Omnipose stops such a mask 3-4 px short of the edge); the masks kept are kept whole. What is left is: one mask per cell, one cell
 cut into two masks, one mask over two cells. Each frame the predicted chain is aligned to
 the masks in order; a cell is judged by its own length and by the gap between its mask
 and the mask of the last cell above that has one, so errors never build up down the column.
 A beam of lineage histories lets the frames after an event decide what it was.
+At the open end and in lysis waves (on by default since 2026-11-09, when they agreed best with the
+Reviewed curations; runs made before, such as chain_S1, had them off):
+  - a cell cut off by the bottom edge has an unknown length, but no shorter than predicted: it can
+    show whole again only that long (not as a short mask, which is its upper daughter, nor shared
+    with its sister in one short mask). Off with --no-trunc-bound;
+  - a cell may divide with only its upper daughter in view, the lower one too far past the bottom
+    to leave a mask; the graph shows the mother with one child, and the GEFF's extra "div_one"
+    lists those daughters' first nodes. Off with --no-div-one;
+  - a cell that went unseen comes back within revival_px per unseen frame of where it was
+    predicted, never by a jump (no lysed cell taking a survivor's mask). Off with --revival.
 Cells off the centre line (side cells, beside the column) are tracked first and kept out of
 the chain: each follows the nearest similar mask, reaching the centre line only by drifting.
 Where the base merges a side cell into a chain cell and an alternative segmentation draws them
-apart, that cut is used (see split_side).
+apart, that cut is used (see split_side). Their tracks are not written (--side writes them, as
+runs before 2026-11-09 did).
 
 Fitted without labels: growth, length noise, gap noise, length at division, jump size.
 Each segmentation has its own fit (params/<segmentation>.json).
@@ -40,6 +53,10 @@ as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is stil
     pixi run -e seg python external/chaintrack/chain.py fit 2-9 --seg pc_affinity_ensemble
     pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble
     pixi run -e seg python external/chaintrack/chain.py follow 0-492 --seg pc_affinity_ensemble --out chain_alt_S1
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --crop-bottom 30
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --clear-bottom 6 --out chain_clearbottom_S1
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --beam 120 --out chain_b120_S1
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --no-trunc-bound --no-div-one --revival --side --out chain_nofix_S1
 """
 import json
 import sys
@@ -65,10 +82,26 @@ TRACKER = "chain"
 # uses only those, --base-only the base alone
 ALTS = sys.argv[sys.argv.index("--alts") + 1].split(",") if "--alts" in sys.argv else None
 BASE_ONLY = "--base-only" in sys.argv
-OUT = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else f"{TRACKER}_S1"
+# masks with more than half their area in the bottom N rows are removed (--crop-bottom N), for
+# crops that reach the halo at the trench opening; 0 (keep them) by default
+CROP_BOTTOM = int(sys.argv[sys.argv.index("--crop-bottom") + 1]) if "--crop-bottom" in sys.argv else 0
+# masks reaching the bottom N rows (cells cut off by the crop's edge) are removed (--clear-bottom N);
+# 0 (keep them) by default
+CLEAR_BOTTOM = int(sys.argv[sys.argv.index("--clear-bottom") + 1]) if "--clear-bottom" in sys.argv else 0
+# lineage histories kept each frame (--beam N); wider lets later frames overturn more calls, slower
+BEAM = int(sys.argv[sys.argv.index("--beam") + 1]) if "--beam" in sys.argv else 40
+# off-centre cells are kept out of the chain and not written; --side writes their tracks
+SIDE = "--side" in sys.argv
+# a cell cut off at the bottom is no shorter than its prediction when it shows whole; --no-trunc-bound: off
+TRUNC_BOUND = "--no-trunc-bound" not in sys.argv
+# a cell may divide with only its upper daughter in view, the lower one past the bottom; --no-div-one: off
+DIV_ONE = "--no-div-one" not in sys.argv
+# a cell that went unseen comes back near where it was predicted, never by a jump; --revival: it may jump
+NO_REVIVAL = "--revival" not in sys.argv
+OUT =sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else f"{TRACKER}_S1"
 
 P = dict(
-    beam=40,
+    beam=BEAM,
     # fitted without labels
     growth=0.029,              # log length per frame
     sigma_end=1.0,             # px, noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
@@ -97,14 +130,20 @@ P = dict(
     side_alt_piece=False,
     side_alt_cut=True,         # a new off-centre mask that alternatives cut into a chain and a side piece is cut
     exit_visible_px=8,
-    crop_bottom_px=30,         # masks mostly in these bottom rows (the halo at the trench opening) are removed
+    crop_bottom_px=CROP_BOTTOM,   # masks mostly in these bottom rows (the halo at the trench opening) are removed
+    clear_bottom_px=CLEAR_BOTTOM,  # masks reaching these bottom rows (cut off by the crop's edge) are removed
     max_gap=8,                 # px: an over-cut cell's two masks are joined across a gap up to this
+    write_side=SIDE,           # write the off-centre cells' tracks
+    trunc_bound=TRUNC_BOUND,   # a cut-off cell's predicted length is a lower bound once it shows whole
+    div_one=DIV_ONE,           # a division may leave its lower daughter unseen past the bottom
+    no_revival=NO_REVIVAL,     # an unseen cell reappears within revival_px (per unseen frame) + 4 gap sigma
+    revival_px=4.0,
 )
 FITTED = ("growth", "sigma_end", "sigma_gap", "div_mu", "div_sd", "jump_scale_px")
 if PARAMS.is_file():
     P.update(json.loads(PARAMS.read_text()))
 
-MOVE = dict(match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7)
+MOVE = dict(match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7, div_one=8)
 INF = 1e18
 APPEAR_COST = 40.0  # no new cells: only when nothing else can explain a mask
 
@@ -118,7 +157,7 @@ def mix(r, sigma, p, scale):
 
 @numba.njit(cache=True)
 def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen, otop, obot,
-          H, sig_gap, p_jump, p_slide, rng, vis, sptr, sidx, pptr, pj2, end_ok, force):
+          H, sig_gap, p_jump, p_slide, rng, vis, sptr, sidx, pptr, pj2, end_ok, sd1, maxr, force):
     """Order-preserving alignment of n predicted cells to a frame's masks. The masks form a graph
     (see Frame): state s = 0 before any mask, s = j + 1 once mask j is taken; sidx[sptr[s]:sptr[s + 1]]
     are the masks that can come next, pj2[pptr[j]:pptr[j + 1]] the masks that can follow mask j
@@ -155,8 +194,12 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
                         # spacing cost of putting cell i's top at mask j's top
                         if a == 0:
                             sp = mix(otop[j] - ptop[i], sig_gap, p_slide, rng)
+                            if abs(otop[j] - ptop[i]) > maxr[i]:
+                                sp = INF
                         else:
                             sp = mix(otop[j] - pt, sig_gap, p_jump, rng)
+                            if abs(otop[j] - pt) > maxr[i]:
+                                sp = INF
                         # match
                         if f < 0 or f == 0:
                             c = c0 + sp + sm[i, j] + nodiv[i]
@@ -178,6 +221,12 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
                                     dp[i + 1, j2 + 1, i + 1] = c; bc[i + 1, j2 + 1, i + 1] = 2; bi[i + 1, j2 + 1, i + 1] = i
                                     bs[i + 1, j2 + 1, i + 1] = s; ba[i + 1, j2 + 1, i + 1] = a
                                     bm[i + 1, j2 + 1, i + 1] = j; bm2[i + 1, j2 + 1, i + 1] = j2
+                        # divide, the lower daughter unseen past the bottom
+                        if (f < 0 or f == 1) and sd1[i, j] < INF:
+                            c = c0 + sp + sd1[i, j] + divc[i]
+                            if c < dp[i + 1, j + 1, i + 1]:
+                                dp[i + 1, j + 1, i + 1] = c; bc[i + 1, j + 1, i + 1] = 8; bi[i + 1, j + 1, i + 1] = i
+                                bs[i + 1, j + 1, i + 1] = s; ba[i + 1, j + 1, i + 1] = a; bm[i + 1, j + 1, i + 1] = j
                         # two cells in one mask
                         if i + 1 < n and (f < 0 or f == 3) and (force[i + 1] < 0 or force[i + 1] == 3):
                             c = c0 + sp + su[i, j] + underc[i] + nodiv[i] + nodiv[i + 1]
@@ -608,7 +657,7 @@ def predict(h):
     return ptop, grown
 
 
-def size_costs(h, frame, grown, t):
+def size_costs(h, frame, grown, t, H):
     obs = frame.masks
     n, m = len(h.ids), len(obs)
     otop = np.array([o[0] for o in obs], float)
@@ -624,6 +673,12 @@ def size_costs(h, frame, grown, t):
         c = 0.5 * (r / sl) ** 2
         c = np.where(cut[None, :] & (r < 0), 0.0, c)             # cut off by the crop: only an upper bound
         ok = (x <= lim) & ((x >= -lim) | cut[None, :])
+        if P["trunc_bound"]:
+            # a cell cut off at the bottom (free): its length is unknown but no shorter than predicted,
+            # so a whole mask may be longer than the prediction, not shorter
+            cf = np.where(r >= 0, 0.0, c)
+            okf = (x >= -lim) | cut[None, :]
+            return np.where(free[:, None], np.where(okf, cf, INF), np.where(ok, c, INF))
         return np.where(ok | free[:, None], np.where(free[:, None], 0.0, c), INF)
 
     olen = obot - otop + 1
@@ -647,14 +702,31 @@ def size_costs(h, frame, grown, t):
         sisters = np.array([h.parent[i] >= 0 and h.parent[i] == h.parent[i + 1]
                             and t - h.born[i] <= P["sisters_frames"] for i in range(n - 1)])
         underc[:n - 1] = -np.log(np.where(sisters, P["p_under_sisters"], P["p_under"]))
-    return sm, sd, so, su, underc, otop, obot
+    # a division with only the upper daughter in view: mask j is about half the mother, and the
+    # lower daughter (the rest of the mother below it) would be cut off so far that no mask of it is
+    # kept: in view by less than the shortest mask kept, or reaching the rows cleared at the bottom
+    sd1 = np.full((n, max(m, 1)), INF)
+    if P["div_one"] and n and m:
+        half = grown[:, None] / 2
+        d1 = np.log(olen[None, :] / half)
+        lower_top = obot[None, :] + 1
+        lower_bot = otop[None, :] + grown[:, None] - 1
+        shortest = (P["div_mu"] - 3 * P["div_sd"]) / 2
+        cleared = P["clear_bottom_px"] > 0
+        unseen = (H - lower_top < shortest) | (cleared & (lower_bot >= H))
+        ok = unseen & (lower_bot >= H) & ~otr[None, :] & (np.abs(d1) <= np.log(P["max_length_change"]) + 3 * P["sigma_daughter"])
+        sd1[:, :m] = np.where(ok, 0.5 * (d1 / P["sigma_daughter"]) ** 2, INF)
+    return sm, sd, so, su, underc, otop, obot, sd1
+
 
 
 def costs(h, frame, H, t):
     ptop, grown = predict(h)
-    sm, sd, so, su, underc, otop, obot = size_costs(h, frame, grown, t)
+    sm, sd, so, su, underc, otop, obot, sd1 = size_costs(h, frame, grown, t, H)
     altc = np.where(frame.alt_first, -np.log(P["p_alt"]), 0.0)
     sm = sm + altc[None, :]
+    if sd1.shape[1] == len(altc):
+        sd1 = sd1 + altc[None, :]
     su = su + altc[None, :]
     if len(frame.pj):
         sd = sd.copy(); so = so.copy()
@@ -665,17 +737,19 @@ def costs(h, frame, H, t):
     divc, nodiv = hazards(np.asarray(h.length, float), grown, np.asarray(h.trunc, bool)) if h.ids else (np.zeros(0), np.zeros(0))
     missc = np.where(np.asarray(h.unseen) < P["max_miss"], -np.log(P["p_miss"]), INF) if h.ids else np.zeros(0)
     overc = np.full(len(grown), -np.log(P["p_over"]))
+    unseen = np.asarray(h.unseen, float) if h.ids else np.zeros(0)
+    maxr = np.where((unseen > 0) & P["no_revival"], 4 * P["sigma_gap"] + P["revival_px"] * unseen, INF)
     args = (sm, sd, so, su, nodiv, divc, underc, overc, missc, -np.log(P["p_lysis"]),
             ptop, grown, otop, obot, float(H), P["sigma_gap"], P["p_jump"], P["p_slide"], P["jump_scale_px"],
-            float(P["exit_visible_px"]), frame.sptr, frame.sidx, frame.pptr, frame.pj2, frame.end_ok)
+            float(P["exit_visible_px"]), frame.sptr, frame.sidx, frame.pptr, frame.pj2, frame.end_ok, sd1, maxr)
     return args, ptop, grown
 
 
 def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     obs = frame.masks
     ids, top, length, parent, born, unseen, trunc = [], [], [], [], [], [], []
-    entries, divisions = [], []
-    events = dict(div=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+    entries, divisions, lone = [], [], []
+    events = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     ref_bot, ref_cell = None, None  # mask bottom and cell of the last cell with a mask
 
@@ -753,12 +827,23 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             keep(c, o[0], o[1] - o[0] + 1, -1, t, 0, o[3])
             entries.append((c, "mask", (o[2],)))
             events["appear"] += 1
+        elif code == 8:
+            o = obs[j]
+            spacing(i, o[0])
+            c = new_id()
+            keep(c, o[0], o[1] - o[0] + 1, h.ids[i], t, 0, False)
+            entries.append((c, "mask", (o[2],)))
+            divisions.append((h.ids[i], c))
+            lone.append(c)
+            events["div_one"] += 1
+            # the cells below are placed after the lower daughter, past the mask
+            ref_bot, ref_cell = o[0] + grown[i] - 1, i
     # keep the chain in order (an appeared mask is placed by its position)
     order = np.argsort(top, kind="stable")
     cols = [ids, top, length, parent, born, unseen, trunc]
     ids, top, length, parent, born, unseen, trunc = ([c[k] for k in order] for c in cols)
     rec = (h.rec, t, entries, divisions, events, lens, gaps, divlen, growth + [("jump", j) for j in jumps],
-           (np.array(rows), ptop, grown, [o[:2] for o in obs], list(h.length), args, cost) if P.get("debug") else None)
+           (np.array(rows), ptop, grown, [o[:2] for o in obs], list(h.length), args, cost) if P.get("debug") else None, lone)
     return Hyp(ids, top, length, parent, born, unseen, trunc, h.score + cost, rec)
 
 
@@ -818,10 +903,11 @@ def visible_end(lab):
 
 def clean(lab):
     """The masks the tracker sees: whole masks only, without those that have more than half
-    their area in the bottom crop_bottom_px rows, and without those shorter than the smallest
-    plausible newborn, (div_mu - 3 div_sd) / 2."""
+    their area in the bottom crop_bottom_px rows, without those reaching the bottom clear_bottom_px
+    rows, and without those shorter than the smallest plausible newborn, (div_mu - 3 div_sd) / 2."""
     lab = np.array(lab)
     cut = lab.shape[1] - P["crop_bottom_px"]
+    edge = lab.shape[1] - P["clear_bottom_px"] if P["clear_bottom_px"] else lab.shape[1]
     shortest = (P["div_mu"] - 3 * P["div_sd"]) / 2
     for f in lab:
         ids = np.unique(f)
@@ -833,7 +919,7 @@ def clean(lab):
         lo = np.asarray(ndi.minimum(rows, which, ids))
         hi = np.asarray(ndi.maximum(rows, which, ids))
         below = np.asarray(ndi.mean(rows >= cut, which, ids))
-        drop = ids[((hi - lo + 1) < shortest) | (below > 0.5)]
+        drop = ids[((hi - lo + 1) < shortest) | (below > 0.5) | (hi >= edge)]
         if len(drop):
             f[np.isin(f, drop)] = 0
     return lab
@@ -865,7 +951,7 @@ def track(labs):
         return [], side, frames
     o0 = [frames[first].masks[j] for j in frames[first].base]
     ids = [new_id() for _ in o0]
-    rec = (None, first, [(c, "mask", (o[2],)) for c, o in zip(ids, o0)], [], {}, [], [], [], [], None)
+    rec = (None, first, [(c, "mask", (o[2],)) for c, o in zip(ids, o0)], [], {}, [], [], [], [], None, [])
     hyps = [Hyp(ids, [float(o[0]) for o in o0], [float(o[1] - o[0] + 1) for o in o0], [-1] * len(o0),
                 [first] * len(o0), [0] * len(o0), [o[3] for o in o0], 0.0, rec)]
     for t in range(first + 1, T):
@@ -879,7 +965,7 @@ def track(labs):
 
 
 def stats_of(recs):
-    tot = dict(div=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+    tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     for r in recs[1:]:
         for k, v in r[4].items():
@@ -897,7 +983,7 @@ def fit(trenches, rounds=3):
     labs = [clean(l) for l in (np.asarray(segmentation(root, t, SEG)[1][0][...]) for t in trenches) if l.any()]
     mad = lambda v: 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
     for r in range(rounds):
-        tot = dict(div=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+        tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
         lens, gaps, divlen, growth, jumps = [], [], [], [], []
         start = time.perf_counter()
         for lab in labs:
@@ -926,7 +1012,7 @@ def write(root, tid, lab, recs, side, frames):
 
     T, H, W = lab.shape
     seg = np.zeros(lab.shape, np.uint16)
-    nodes, nlab, divisions = [], {}, []
+    nodes, nlab, divisions, lone = [], {}, [], set()
 
     def add(t, cell, pix):
         if len(pix) == 0:
@@ -948,7 +1034,8 @@ def write(root, tid, lab, recs, side, frames):
                 pix = p[(p // W) < data[1]] if kind == "upper" else p[(p // W) >= data[1]]
             add(t, cell, pix)
         divisions += divs
-    for sid, seq in side.items():
+        lone |= set(r[10])
+    for sid, seq in (side.items() if P["write_side"] else ()):
         for t, l in seq:
             add(t, ("side", sid), np.flatnonzero(lab[t].ravel() == l))
     by_cell = {}
@@ -967,9 +1054,13 @@ def write(root, tid, lab, recs, side, frames):
     track_id, lineage_id = tracklets_and_lineages(len(nodes), tt, e)
     props = {"t": tt, "y": np.array([n[2] for n in nodes], np.float32), "x": np.array([n[3] for n in nodes], np.float32),
              "seg_id": np.array([n[4] for n in nodes], np.int32), "track_id": track_id, "lineage_id": lineage_id}
+    # daughters whose sister went past the bottom unseen: their first nodes (GEFF ids: position + 1);
+    # the mother's link to such a daughter is a division, though the graph shows a single child
+    first = {cell: min(seq)[1] for cell, seq in by_cell.items()}
+    div_one = sorted(int(first[c]) + 1 for c in lone if c in first)
     write_tracks(root, tid, OUT, props, e, np.full(len(e), np.nan, np.float32), seg,
                  extra={"tracker": TRACKER, "segmentation": SEG, "params": json.dumps(P, default=str),
-                        "channels": [str(c) for c in root["C"][:]]})
+                        "channels": [str(c) for c in root["C"][:]], "div_one": div_one})
 
 
 def alternatives(names):
@@ -1032,6 +1123,8 @@ def follow(trenches):
 def parse(args):
     out = []
     for a in args:
+        if a.startswith("--"):
+            sys.exit(f"chain.py: unknown option {a}")
         if "-" in a:
             lo, hi = map(int, a.split("-"))
             out += list(range(lo, hi + 1))
@@ -1042,7 +1135,9 @@ def parse(args):
 
 if __name__ == "__main__":
     args = sys.argv[2:]
-    for flag, takes in (("--seg", 1), ("--out", 1), ("--alts", 1), ("--base-only", 0), ("--group", 1)):
+    for flag, takes in (("--seg", 1), ("--out", 1), ("--alts", 1), ("--base-only", 0), ("--group", 1),
+                        ("--crop-bottom", 1), ("--clear-bottom", 1), ("--beam", 1), ("--side", 0),
+                        ("--no-trunc-bound", 0), ("--no-div-one", 0), ("--revival", 0)):
         if flag in args:
             k = args.index(flag); args = args[:k] + args[k + 1 + takes:]
     cmd, rest = sys.argv[1], parse(args)
