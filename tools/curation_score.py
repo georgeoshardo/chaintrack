@@ -24,7 +24,8 @@ frames), tolerant of what the curation cannot or need not pin down:
 
     pixi run -e seg python external/chaintrack/tools/curation_score.py chain_S1,chain_fix_S1 [--v]
     (--curation RUN: the curated run, default chain_clearbottom_endfix_S1; --trenches 0,2,3: default
-    the Reviewed ones; a run as GROUP:RUN is read from another experiment group, e.g. a scratch copy)
+    the Reviewed ones; a run as STORE:RUN is read from another experiment group, e.g. a scratch copy, and --store PATH
+    reads every run from there; the curations are always the real store's)
 """
 import sys
 from collections import Counter, defaultdict
@@ -35,7 +36,7 @@ import zarr
 S = "/data/phage-signatures/20261005_pbs_psc_yfp_ty013.zarr"
 RUNS = sys.argv[1].split(",")
 CURRUN = sys.argv[sys.argv.index("--curation") + 1] if "--curation" in sys.argv else "chain_clearbottom_endfix_S1"
-GROUP = sys.argv[sys.argv.index("--group") + 1] if "--group" in sys.argv else S
+STORE = sys.argv[sys.argv.index("--store") + 1] if "--store" in sys.argv else S
 VERBOSE = "--v" in sys.argv
 EDGE = 6          # masks reaching the bottom EDGE rows are cut off by the crop: not judged
 CENTRE_PX = 6     # masks further than this from the centre line are side objects
@@ -260,7 +261,7 @@ if __name__ == "__main__":
         centre = centre_of(tid)
         for r in RUNS:
             grp, _, name = r.rpartition(":")
-            grp = grp or GROUP
+            grp = grp or STORE
             run = G(f"{grp}/trench_{tid:04d}/tracks/{name}.geff", f"{grp}/trench_{tid:04d}/labels/tracks.{name}/0")
             out, ev = score(run, cur, centre)
             tot[r].update(out)

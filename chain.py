@@ -14,53 +14,69 @@ The trench is an ordered chain of cells from the closed end. Between frames:
   - no new cells appear after the first frame.
 The masks (S1 only, shapes only, no image) are observations, cleaned first: any mask shorter
 than the smallest plausible newborn, (div_mu - 3 div_sd) / 2, is removed whole, and with
---crop-bottom N so is a mask with more than half its area in the bottom N rows (for crops that
-reach the halo at the trench opening; PyMMM's crops stop above it, so none by default), and
-with --clear-bottom N any mask reaching the bottom N rows (a cell cut off by the crop's edge;
-Omnipose stops such a mask 3-4 px short of the edge); the masks kept are kept whole. What is left is: one mask per cell, one cell
+the recipe's crop_bottom_um so is a mask with more than half its area in those bottom rows (for
+crops that reach the halo at the trench opening; PyMMM's crops stop above it, so 0 by default),
+and with clear_bottom_um any mask reaching those bottom rows (a cell cut off by the crop's edge;
+Omnipose stops such a mask 3-4 px short of the edge at 40x); the masks kept are kept whole. What is left is: one mask per cell, one cell
 cut into two masks, one mask over two cells. Each frame the predicted chain is aligned to
 the masks in order; a cell is judged by its own length and by the gap between its mask
 and the mask of the last cell above that has one, so errors never build up down the column.
 A beam of lineage histories lets the frames after an event decide what it was.
-At the open end and in lysis waves (on by default since 2026-11-09, when they agreed best with the
-Reviewed curations; runs made before, such as chain_S1, had them off):
+At the open end and in lysis waves (on in the recipe since 2026-11-09, when they agreed best with
+the Reviewed curations; runs made before, such as chain_S1, had them off):
   - a cell cut off by the bottom edge has an unknown length, but no shorter than predicted: it can
     show whole again only that long (not as a short mask, which is its upper daughter, nor shared
-    with its sister in one short mask). Off with --no-trunc-bound;
+    with its sister in one short mask). The recipe's trunc_bound;
   - a cell may divide with only its upper daughter in view, the lower one too far past the bottom
     to leave a mask; the graph shows the mother with one child, and the GEFF's extra "div_one"
-    lists those daughters' first nodes. Off with --no-div-one;
-  - a cell that went unseen comes back within revival_px per unseen frame of where it was
-    predicted, never by a jump (no lysed cell taking a survivor's mask). Off with --revival.
+    lists those daughters' first nodes. The recipe's div_one;
+  - a cell that went unseen comes back within revival_um_per_min per unseen minute of where it was
+    predicted, never by a jump (no lysed cell taking a survivor's mask). The recipe's no_revival.
 Cells off the centre line (side cells, beside the column) are tracked first and kept out of
 the chain: each follows the nearest similar mask, reaching the centre line only by drifting.
 Where the base merges a side cell into a chain cell and an alternative segmentation draws them
-apart, that cut is used (see split_side). Their tracks are not written (--side writes them, as
-runs before 2026-11-09 did).
+apart, that cut is used (see split_side). Their tracks are not written (the recipe's write_side
+writes them, as runs before 2026-11-09 did).
 
-Fitted without labels: growth, length noise, gap noise, length at division, jump size.
-Each segmentation has its own fit (params/<segmentation>.json).
+The constants set by hand are a recipe (--recipe FILE, a toml; phage-signatures keeps
+recipes/tracking/chain.toml), in µm and minutes, so one recipe serves every magnification and
+frame rate: chaintrack reads the store's pixel size and frame interval and works in pixels and
+frames (RECIPE_KEYS says how each key is converted; lengths counted in pixels become whole
+pixels, a probability per minute becomes the probability over one frame, and the segmentation
+error probabilities stay per frame). Every key is required, and unknown keys are refused.
 
-The masks come from the experiment group PyMMM extracts (one OME-Zarr image per trench,
+Fitted without labels: growth, length noise, gap noise, length at division, jump size. Each store
+has its own fit: `fit` measures them on that store's trenches and records them in the store,
+attrs.pymmm.fits[<fit>] (in µm and minutes, with the trenches used, the recipe and chaintrack's
+commit; --fit NAME, default the segmentation's name), and `run` reads them from there. A store's
+first fit starts from the recipe's [fit_start], a later one from the store's last.
+
+The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
 labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base first. `run` writes each trench's tracks
 beside it, as the run <out> (default chain_S1): the GEFF tracks/<out>.geff and the masks it chose,
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
 edit), so re-running replaces tracker output only. `follow` does the same for each trench as soon
 as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is still segmenting the others.
+A run's record in the store (attrs.pymmm.tracks[<out>]) holds the recipe as given, the fit, the
+parameters as used (pixels and frames), the store's calibration and chaintrack's commit.
 
     cd /data/phage-signatures
-    pixi run -e seg python external/chaintrack/chain.py fit 2-9 --seg pc_affinity_ensemble
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble
-    pixi run -e seg python external/chaintrack/chain.py follow 0-492 --seg pc_affinity_ensemble --out chain_alt_S1
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --crop-bottom 30
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --clear-bottom 6 --out chain_clearbottom_S1
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --beam 120 --out chain_b120_S1
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 --seg pc_affinity_ensemble --no-trunc-bound --no-div-one --revival --side --out chain_nofix_S1
+    S="--store 20261005_pbs_psc_yfp_ty013.zarr --recipe recipes/tracking/chain.toml --seg pc_affinity_ensemble"
+    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S
+    pixi run -e seg python external/chaintrack/chain.py follow 0-436 $S --out chain_alt_S1
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --base-only --out chain_base_S1
+
+A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) is a run
+with another recipe file.
 """
 import json
+import subprocess
 import sys
 import time
+import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 import numba
@@ -68,84 +84,158 @@ import numpy as np
 from scipy import ndimage as ndi
 from scipy.special import ndtr
 
-HERE = Path(__file__).resolve().parent
-ROOT = Path("/data/phage-signatures")
-EXPERIMENT = "20261005_pbs_psc_yfp_ty013"
-# the experiment group: one OME-Zarr image per trench (--group PATH for another, e.g. a scratch copy)
-GROUP = Path(sys.argv[sys.argv.index("--group") + 1]) if "--group" in sys.argv else ROOT / f"{EXPERIMENT}.zarr"
-# which segmentation's masks to track (--seg NAME, default the mCherry one); each has its own fit
-SEG = sys.argv[sys.argv.index("--seg") + 1] if "--seg" in sys.argv else "mcherry"
-PARAMS = HERE / "params" / f"{SEG}.json"
-TRACKER = "chain"
-# a segmentation with several hypotheses: the first is the base, the others its alternatives (which
-# checkpoints those are is decided in the experiment file's [segmentation]); --alts e050,e150
-# uses only those, --base-only the base alone
-ALTS = sys.argv[sys.argv.index("--alts") + 1].split(",") if "--alts" in sys.argv else None
-BASE_ONLY = "--base-only" in sys.argv
-# masks with more than half their area in the bottom N rows are removed (--crop-bottom N), for
-# crops that reach the halo at the trench opening; 0 (keep them) by default
-CROP_BOTTOM = int(sys.argv[sys.argv.index("--crop-bottom") + 1]) if "--crop-bottom" in sys.argv else 0
-# masks reaching the bottom N rows (cells cut off by the crop's edge) are removed (--clear-bottom N);
-# 0 (keep them) by default
-CLEAR_BOTTOM = int(sys.argv[sys.argv.index("--clear-bottom") + 1]) if "--clear-bottom" in sys.argv else 0
-# lineage histories kept each frame (--beam N); wider lets later frames overturn more calls, slower
-BEAM = int(sys.argv[sys.argv.index("--beam") + 1]) if "--beam" in sys.argv else 40
-# off-centre cells are kept out of the chain and not written; --side writes their tracks
-SIDE = "--side" in sys.argv
-# a cell cut off at the bottom is no shorter than its prediction when it shows whole; --no-trunc-bound: off
-TRUNC_BOUND = "--no-trunc-bound" not in sys.argv
-# a cell may divide with only its upper daughter in view, the lower one past the bottom; --no-div-one: off
-DIV_ONE = "--no-div-one" not in sys.argv
-# a cell that went unseen comes back near where it was predicted, never by a jump; --revival: it may jump
-NO_REVIVAL = "--revival" not in sys.argv
-OUT =sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else f"{TRACKER}_S1"
+from pymmm.store.experiment_group import calibration, open_experiment, records
 
-P = dict(
-    beam=BEAM,
-    # fitted without labels
-    growth=0.029,              # log length per frame
-    sigma_end=1.0,             # px, noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
-    sigma_gap=2.0,             # px, noise of the gap between neighbours
-    div_mu=57.6, div_sd=6.1,   # px, length at division
-    # priors
-    max_length_change=1.25,    # outside a division, a cell's masks fit its predicted length within this
-    sigma_daughter=0.15,       # log size of each daughter relative to half the mother
-    p_jump=0.005,              # the gap above a cell jumps this frame
-    p_slide=0.005,             # the top cell (and so the column) jumps this frame
-    p_over=0.01,               # one cell cut into two masks
-    p_alt=0.01,                # the base segmentation is wrong at a spot, so another hypothesis's cut is right
-    p_under=0.01,              # one mask over two cells
-    p_under_sisters=0.2,       # ... sisters born in the last few frames
-    sisters_frames=3,
-    p_miss=0.01, max_miss=3,
-    p_lysis=0.003,
-    jump_scale_px=20.0,        # typical size of a jump (fitted)
-    centre_px=6,               # masks further than this from the centre line are off the chain
-    side_sigma_y=15.0, side_sigma_area=0.1, side_sigma_x=4.0,   # an off-centre cell between frames
-    side_max_cost=16.0,        # ... anything worse is not the same cell (4 sigma)
-    side_min_overlap=0.3,      # an off-centre cell reaches the centre line only by drifting: its mask there overlaps its last one by this much of the smaller
-    side_min_piece_px=30,      # an alternative separates a side cell from a chain cell only into pieces at least this big
-    # a side cell the base merged into a chain cell continues on an alternative's piece: off, as a
-    # decision made before the chain it can shift the chain (trench 1 t40); it belongs in the beam
-    side_alt_piece=False,
-    side_alt_cut=True,         # a new off-centre mask that alternatives cut into a chain and a side piece is cut
-    exit_visible_px=8,
-    crop_bottom_px=CROP_BOTTOM,   # masks mostly in these bottom rows (the halo at the trench opening) are removed
-    clear_bottom_px=CLEAR_BOTTOM,  # masks reaching these bottom rows (cut off by the crop's edge) are removed
-    max_gap=8,                 # px: an over-cut cell's two masks are joined across a gap up to this
-    write_side=SIDE,           # write the off-centre cells' tracks
-    trunc_bound=TRUNC_BOUND,   # a cut-off cell's predicted length is a lower bound once it shows whole
-    div_one=DIV_ONE,           # a division may leave its lower daughter unseen past the bottom
-    no_revival=NO_REVIVAL,     # an unseen cell reappears within revival_px (per unseen frame) + 4 gap sigma
-    revival_px=4.0,
-)
-FITTED = ("growth", "sigma_end", "sigma_gap", "div_mu", "div_sd", "jump_scale_px")
-if PARAMS.is_file():
-    P.update(json.loads(PARAMS.read_text()))
+HERE = Path(__file__).resolve().parent
+TRACKER = "chain"
+
+
+def option(flag):
+    """The value after ``flag`` on the command line, or None."""
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
+
+
+# the experiment group to track: one OME-Zarr image per trench (--store PATH)
+STORE = option("--store")
+# the constants set by hand, in µm and minutes (--recipe FILE)
+RECIPE_FILE = option("--recipe")
+# which segmentation's masks to track (--seg NAME)
+SEG = option("--seg")
+for _flag, _value in (("--store", STORE), ("--recipe", RECIPE_FILE), ("--seg", SEG)):
+    if _value is None:
+        sys.exit(f"chain.py: give {_flag} (chain.py <fit|run|follow> <trenches> --store <experiment>.zarr "
+                 "--recipe <file> --seg <segmentation>)")
+STORE = Path(STORE)
+# the fit to use, or to make: the store's record attrs.pymmm.fits[<fit>] (--fit NAME, default the segmentation's name)
+FIT = option("--fit") or SEG
+# a segmentation with several hypotheses: the first is the base, the others its alternatives (which
+# checkpoints those are is in the store's record of the segmentation); --alts e050,e150
+# uses only those, --base-only the base alone
+ALTS = option("--alts").split(",") if "--alts" in sys.argv else None
+BASE_ONLY = "--base-only" in sys.argv
+OUT = option("--out") or f"{TRACKER}_S1"
+
+# The recipe's keys: the parameter each becomes (in pixels and frames, as the tracker uses them) and how.
+#   same          copied                      flag    copied, true or false       count   copied, a whole number
+#   px            µm, as pixels               whole px    µm, as whole pixels     whole px2   µm², as a number of pixels
+#   frames        minutes, as whole frames    px per frame    µm per minute
+#   per frame     a probability per minute, as the probability over one frame
+#   log per frame a log growth per minute, over one frame
+RECIPE_KEYS = {
+    "beam": ("beam", "count"),
+    "max_length_change": ("max_length_change", "same"),
+    "sigma_daughter": ("sigma_daughter", "same"),
+    "p_jump_per_min": ("p_jump", "per frame"),
+    "p_slide_per_min": ("p_slide", "per frame"),
+    "p_lysis_per_min": ("p_lysis", "per frame"),
+    "appear_cost": ("appear_cost", "same"),
+    "p_over": ("p_over", "same"),
+    "p_under": ("p_under", "same"),
+    "p_under_sisters": ("p_under_sisters", "same"),
+    "sisters_min": ("sisters_frames", "frames"),
+    "p_alt": ("p_alt", "same"),
+    "p_miss": ("p_miss", "same"),
+    "max_miss_frames": ("max_miss", "count"),
+    "centre_um": ("centre_px", "whole px"),
+    "exit_visible_um": ("exit_visible_px", "whole px"),
+    "max_gap_um": ("max_gap", "whole px"),
+    "cut_off_um": ("cut_off_px", "whole px"),
+    "crop_bottom_um": ("crop_bottom_px", "whole px"),
+    "clear_bottom_um": ("clear_bottom_px", "whole px"),
+    "trunc_bound": ("trunc_bound", "flag"),
+    "div_one": ("div_one", "flag"),
+    "no_revival": ("no_revival", "flag"),
+    "revival_um_per_min": ("revival_px", "px per frame"),
+    "write_side": ("write_side", "flag"),
+    "side_sigma_y_um": ("side_sigma_y", "px"),
+    "side_sigma_x_um": ("side_sigma_x", "px"),
+    "side_sigma_area": ("side_sigma_area", "same"),
+    "side_max_cost": ("side_max_cost", "same"),
+    "side_min_overlap": ("side_min_overlap", "same"),
+    "side_min_piece_um2": ("side_min_piece_px", "whole px2"),
+    "side_alt_cut": ("side_alt_cut", "flag"),
+    "side_alt_piece": ("side_alt_piece", "flag"),
+    "side_window_um": ("side_window_px", "whole px"),
+}
+# The fitted values, as a store's fit record and the recipe's [fit_start] hold them
+FIT_KEYS = {
+    "growth_per_min": ("growth", "log per frame"),   # log length per frame
+    "sigma_end_um": ("sigma_end", "px"),             # noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
+    "sigma_gap_um": ("sigma_gap", "px"),             # noise of the gap between neighbours
+    "div_um": ("div_mu", "px"),                      # length at division
+    "div_sd_um": ("div_sd", "px"),
+    "jump_scale_um": ("jump_scale_px", "px"),        # typical size of a jump
+}
+
+
+def load_recipe(path):
+    """The recipe file's constants and its [fit_start] values. Every key must be there, none
+    unknown, each a number (or true/false for a flag, a whole number for a count)."""
+    with open(path, "rb") as file:
+        raw = tomllib.load(file)
+    start = raw.pop("fit_start", {})
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    right = {"flag": lambda v: isinstance(v, bool), "count": lambda v: isinstance(v, int) and not isinstance(v, bool)}
+    problems = []
+    for prefix, table, keys in (("", raw, RECIPE_KEYS), ("fit_start.", start, FIT_KEYS)):
+        problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
+        problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
+        problems += [f"{prefix}{k} = {v!r}: not a {'number' if keys[k][1] not in right else keys[k][1]}"
+                     for k, v in table.items() if k in keys and not right.get(keys[k][1], number)(v)]
+    if problems:
+        sys.exit(f"chain.py: recipe {path}:\n  " + "\n  ".join(problems))
+    return raw, start
+
+
+def to_pixels(value, how):
+    """A recipe or fit value in the store's pixels and frames."""
+    if how == "px":
+        return value / PX
+    if how == "whole px":
+        return int(round(value / PX))
+    if how == "whole px2":
+        return int(round(value / PX ** 2))
+    if how == "frames":
+        return int(round(value / DT))
+    if how == "px per frame":
+        return value * DT / PX
+    if how == "per frame":
+        return 1.0 - (1.0 - value) ** DT
+    if how == "log per frame":
+        return value * DT
+    return value
+
+
+def fitted():
+    """The fitted parameters as a fit record holds them: µm and minutes."""
+    return {k: float(P[p] / DT if how == "log per frame" else P[p] * PX) for k, (p, how) in FIT_KEYS.items()}
+
+
+@lru_cache(maxsize=1)
+def code_version():
+    """chaintrack's commit, and whether tracked files had uncommitted changes (None outside git)."""
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-C", str(HERE), *args], capture_output=True, text=True,
+                                  timeout=10, check=True).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+    commit = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain", "--untracked-files=no") if commit else None
+    return {"commit": commit, "dirty": None if status is None else bool(status)}
+
+
+RECIPE, FIT_START = load_recipe(RECIPE_FILE)
+PX, DT = calibration(open_experiment(STORE))   # µm per pixel, minutes per frame
+# the store's record of the fit: None until `fit` has run on this store
+FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
+# The parameters as the tracker uses them, in pixels and frames: the recipe's constants, and the
+# fitted ones from the store's fit (from the recipe's [fit_start] until there is one)
+P = {p: to_pixels(RECIPE[k], how) for k, (p, how) in RECIPE_KEYS.items()}
+P.update({p: to_pixels((FIT_RECORD["values"] if FIT_RECORD else FIT_START)[k], how) for k, (p, how) in FIT_KEYS.items()})
 
 MOVE = dict(match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7, div_one=8)
 INF = 1e18
-APPEAR_COST = 40.0  # no new cells: only when nothing else can explain a mask
 
 
 @numba.njit(cache=True)
@@ -157,7 +247,7 @@ def mix(r, sigma, p, scale):
 
 @numba.njit(cache=True)
 def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen, otop, obot,
-          H, sig_gap, p_jump, p_slide, rng, vis, sptr, sidx, pptr, pj2, end_ok, sd1, maxr, force):
+          H, sig_gap, p_jump, p_slide, rng, vis, sptr, sidx, pptr, pj2, end_ok, sd1, maxr, appear, force):
     """Order-preserving alignment of n predicted cells to a frame's masks. The masks form a graph
     (see Frame): state s = 0 before any mask, s = j + 1 once mask j is taken; sidx[sptr[s]:sptr[s + 1]]
     are the masks that can come next, pj2[pptr[j]:pptr[j + 1]] the masks that can follow mask j
@@ -257,7 +347,7 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
                                 dp[i + 1, s, a] = c; bc[i + 1, s, a] = 6; bi[i + 1, s, a] = i; bs[i + 1, s, a] = s; ba[i + 1, s, a] = a
                 for q in range(sptr[s], sptr[s + 1]):  # a mask no cell explains
                     j = sidx[q]
-                    c = c0 + APPEAR_COST
+                    c = c0 + appear
                     if c < dp[i, j + 1, a]:
                         dp[i, j + 1, a] = c; bc[i, j + 1, a] = 7; bi[i, j + 1, a] = i; bs[i, j + 1, a] = s; ba[i, j + 1, a] = a
                         bm[i, j + 1, a] = j
@@ -305,7 +395,7 @@ def frame_masks(frame, H):
             continue
         pix = np.flatnonzero(flat == l)
         rows, cols = pix // W, pix % W
-        out.append((int(rows.min()), int(rows.max()), int(l), bool(rows.max() >= H - 2), float(rows.mean()),
+        out.append((int(rows.min()), int(rows.max()), int(l), bool(rows.max() >= H - P["cut_off_px"]), float(rows.mean()),
                     len(pix), float(cols.mean())))
     return out
 
@@ -339,7 +429,7 @@ def alt_side_piece(frame, alt_frames, last, centre, claimed):
     base merged the cell into a chain cell). (host label, flat pixels of the piece) or None."""
     W = frame.shape[1]
     flat = frame.ravel()
-    lo, hi = max(0, int(last[0]) - 40), int(last[1]) + 41
+    lo, hi = max(0, int(last[0]) - P["side_window_px"]), int(last[1]) + P["side_window_px"] + 1
     best = None
     for alt in alt_frames:
         window = alt[lo:hi]
@@ -541,7 +631,7 @@ class Frame:
                 if same < 0:
                     rows = q // W
                     same = len(info)
-                    info.append((int(rows.min()), int(rows.max()), same, bool(rows.max() >= H - 2),
+                    info.append((int(rows.min()), int(rows.max()), same, bool(rows.max() >= H - P["cut_off_px"]),
                                  float(rows.mean()), len(q)))
                     pix.append(q); extras.append(same)
                 mine.append(same)
@@ -741,7 +831,8 @@ def costs(h, frame, H, t):
     maxr = np.where((unseen > 0) & P["no_revival"], 4 * P["sigma_gap"] + P["revival_px"] * unseen, INF)
     args = (sm, sd, so, su, nodiv, divc, underc, overc, missc, -np.log(P["p_lysis"]),
             ptop, grown, otop, obot, float(H), P["sigma_gap"], P["p_jump"], P["p_slide"], P["jump_scale_px"],
-            float(P["exit_visible_px"]), frame.sptr, frame.sidx, frame.pptr, frame.pj2, frame.end_ok, sd1, maxr)
+            float(P["exit_visible_px"]), frame.sptr, frame.sidx, frame.pptr, frame.pj2, frame.end_ok, sd1, maxr,
+            float(P["appear_cost"]))
     return args, ptop, grown
 
 
@@ -977,10 +1068,18 @@ def stats_of(recs):
 
 
 def fit(trenches, rounds=3):
-    from pymmm.store.experiment_group import open_experiment, segmentation
+    """Measure the fitted parameters on these trenches' own tracks (the base hypothesis, tracked
+    with the current values, `rounds` times over), and record them in the store as its fit FIT."""
+    from pymmm.store.experiment_group import segmentation, update_experiment
 
-    root = open_experiment(GROUP)
-    labs = [clean(l) for l in (np.asarray(segmentation(root, t, SEG)[1][0][...]) for t in trenches) if l.any()]
+    root = open_experiment(STORE)
+    started = f"the store's fit of {FIT_RECORD['created']}" if FIT_RECORD else "the recipe's fit_start"
+    print(f"fit {FIT} of {STORE.name} ({PX:.4f} µm per pixel, {DT:.4f} min per frame), starting from {started}", flush=True)
+    used, labs = [], []
+    for t in trenches:
+        lab = np.asarray(segmentation(root, t, SEG)[1][0][...])
+        if lab.any():
+            used.append(int(t)); labs.append(clean(lab))
     mad = lambda v: 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
     for r in range(rounds):
         tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
@@ -1004,7 +1103,15 @@ def fit(trenches, rounds=3):
         print(f"round {r + 1}: {len(labs)} trenches, {time.perf_counter() - start:.0f} s; events {tot}; "
               f"growth {P['growth']:.4f}, end noise {P['sigma_end']:.2f} px, gap noise {P['sigma_gap']:.2f} px, "
               f"division {P['div_mu']:.1f} ± {P['div_sd']:.1f} px, jump scale {P['jump_scale_px']:.1f} px", flush=True)
-    PARAMS.write_text(json.dumps({k: P[k] for k in FITTED}, indent=1))
+    # a fresh handle, so records written to the store while this ran are kept
+    update_experiment(open_experiment(STORE, mode="r+"), "fits", FIT, {
+        "tracker": TRACKER, "segmentation": SEG, "values": fitted(),
+        "trenches": used, "frames": "all", "rounds": rounds, "started_from": started,
+        "recipe": RECIPE, "pixel_size_um": PX, "frame_interval_min": DT,
+        "made_by": "external/chaintrack/chain.py fit", "chaintrack": code_version(),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+    print(f"fit recorded in {STORE.name}, attrs.pymmm.fits[{FIT!r}]: "
+          + ", ".join(f"{k} {v:.4g}" for k, v in fitted().items()), flush=True)
 
 
 def write(root, tid, lab, recs, side, frames):
@@ -1060,6 +1167,7 @@ def write(root, tid, lab, recs, side, frames):
     div_one = sorted(int(first[c]) + 1 for c in lone if c in first)
     write_tracks(root, tid, OUT, props, e, np.full(len(e), np.nan, np.float32), seg,
                  extra={"tracker": TRACKER, "segmentation": SEG, "params": json.dumps(P, default=str),
+                        "fit": FIT, "chaintrack_commit": code_version()["commit"],
                         "channels": [str(c) for c in root["C"][:]], "div_one": div_one})
 
 
@@ -1072,21 +1180,32 @@ def alternatives(names):
     return list(range(1, len(names)))
 
 
+def need_fit():
+    """Tracking needs the store's own fit."""
+    if FIT_RECORD is None:
+        have = sorted(records(open_experiment(STORE), "fits")) or "none"
+        sys.exit(f"chain.py: {STORE.name} has no fit {FIT!r} (its fits: {have}): run `chain.py fit <trenches>` on it first")
+
+
 def record_run(root):
-    """Note this run (its segmentation and settings) in the experiment group."""
+    """Note this run in the experiment group: its segmentation, the recipe as given (µm and
+    minutes), the fit it used, and the parameters as the tracker used them (pixels and frames)."""
     from pymmm.store.experiment_group import update_experiment
 
     update_experiment(root, "tracks", OUT, {
         "tracker": TRACKER, "segmentation": SEG, "params": json.loads(json.dumps(P, default=str)),
+        "recipe": RECIPE, "fit": {"name": FIT, "values": FIT_RECORD["values"], "created": FIT_RECORD.get("created")},
+        "pixel_size_um": PX, "frame_interval_min": DT,
         "alternatives": "none" if BASE_ONLY else (ALTS or "all"), "made_by": "external/chaintrack/chain.py",
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        "chaintrack": code_version(), "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
 
 
 def run(trenches, root=None):
-    from pymmm.store.experiment_group import open_experiment, segmentation
+    from pymmm.store.experiment_group import segmentation
 
     if root is None:
-        root = open_experiment(GROUP, mode="r+")
+        need_fit()
+        root = open_experiment(STORE, mode="r+")
         record_run(root)
     for tid in trenches:
         names, labels = segmentation(root, tid, SEG)
@@ -1096,15 +1215,16 @@ def run(trenches, root=None):
         recs, side, frames = track(labs)
         print(f"trench {tid}: {len(use)} hypotheses, {time.perf_counter() - start:.0f} s; events {stats_of(recs)[0]}", flush=True)
         write(root, tid, labs[0], recs, side, frames)
-    print(f"tracks: {GROUP}/trench_NNNN/tracks/{OUT}.geff", flush=True)
+    print(f"tracks: {STORE}/trench_NNNN/tracks/{OUT}.geff", flush=True)
 
 
 def follow(trenches):
     """Track each trench as soon as its segmentation is finished (the Segmenter still running),
     until every one is tracked."""
-    from pymmm.store.experiment_group import has_segmentation, open_experiment
+    from pymmm.store.experiment_group import has_segmentation
 
-    root = open_experiment(GROUP, mode="r+")
+    need_fit()
+    root = open_experiment(STORE, mode="r+")
     record_run(root)
     left = list(trenches)
     while left:
@@ -1134,11 +1254,12 @@ def parse(args):
 
 
 if __name__ == "__main__":
+    commands = {"fit": fit, "run": run, "follow": follow}
+    if len(sys.argv) < 2 or sys.argv[1] not in commands:
+        sys.exit("chain.py <fit|run|follow> <trenches> --store <experiment>.zarr --recipe <file> --seg <segmentation>")
     args = sys.argv[2:]
-    for flag, takes in (("--seg", 1), ("--out", 1), ("--alts", 1), ("--base-only", 0), ("--group", 1),
-                        ("--crop-bottom", 1), ("--clear-bottom", 1), ("--beam", 1), ("--side", 0),
-                        ("--no-trunc-bound", 0), ("--no-div-one", 0), ("--revival", 0)):
+    for flag, takes in (("--store", 1), ("--recipe", 1), ("--seg", 1), ("--fit", 1), ("--out", 1), ("--alts", 1),
+                        ("--base-only", 0)):
         if flag in args:
             k = args.index(flag); args = args[:k] + args[k + 1 + takes:]
-    cmd, rest = sys.argv[1], parse(args)
-    {"fit": fit, "run": run, "follow": follow}[cmd](rest)
+    commands[sys.argv[1]](parse(args))
