@@ -6,8 +6,8 @@ The model is described in the docstring at the top of `chain.py`.
 
 Run from the phage-signatures repo, whose pixi `seg` environment it uses:
 
-    S="--store 20261005_pbs_psc_yfp_ty013.zarr --recipe recipes/tracking/chain.toml --seg pc_affinity_ensemble"
-    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S
+    S="--store 20261005_pbs_psc_yfp_ty013.zarr --seg pc_affinity_ensemble"
+    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/chain.toml
     pixi run -e seg python external/chaintrack/chain.py run 0-436 $S
     pixi run curate 0
 
@@ -16,7 +16,15 @@ Run from the phage-signatures repo, whose pixi `seg` environment it uses:
 - `--recipe` is a toml of every constant set by hand, in µm and minutes
   (phage-signatures keeps `recipes/tracking/chain.toml`). chaintrack converts it to the store's
   pixels and frames, so one recipe serves every magnification and frame rate. Every key is
-  required, and unknown keys are refused. What used to be flags is in the recipe:
+  required, and unknown keys are refused.
+- Only `fit` reads the recipe file. It freezes the recipe's contents in the store's fit record, and
+  `run` and `follow` use that copy, so editing the file for another experiment cannot change the
+  tracks of an experiment that is already fitted. To track an experiment with another recipe, fit
+  it again under a new name (`fit ... --recipe other.toml --fit other`) and track with that fit
+  (`run ... --fit other --out chain_other`). Two refusals keep a run from being tracked two ways:
+  `fit` does not overwrite a fit that a run has used, and `run` adds trenches to an existing run
+  only with the fit, segmentation and alternatives that run was started with.
+- What used to be flags is in the recipe:
   - `beam`: how many lineage histories are kept each frame (40). Wider lets later frames overturn
     more ambiguous calls; 120 takes about 2.3x as long to track.
   - `crop_bottom_um` removes masks with more than half their area in those bottom rows, for crops
@@ -37,16 +45,22 @@ Run from the phage-signatures repo, whose pixi `seg` environment it uses:
       jump, so a lysed cell cannot take a survivor's mask.
   - `write_side`: side cells (off the centre line) are kept out of the chain and not written;
     with it their tracks are written.
-- `fit` measures growth, the two noise widths, the length at division and the jump size on the
+  - `sigma_gap_um`: the noise of the gap above a cell from one frame to the next, 0.054 µm (half a
+    pixel at 40x). It is a constant, not fitted: gap changes are whole pixels and more than half
+    are 0, so the fit's robust spread read them as no noise and always fell back on half a pixel
+    of the store, which at 100x is 0.033 µm and called one division in six a minute late. As a
+    plain spread the changes are 0.07 µm at 40x and at 100x alike.
+- `fit` measures growth, the noise of a mask's ends, the length at division and the jump size on the
   store's own trenches and records them in the store, `attrs.pymmm.fits[<fit>]`, in µm and minutes,
   with the trenches used, the recipe and chaintrack's commit (`--fit NAME`; default the
-  segmentation's name). `run` reads the fit from the store and stops if there is none.
+  segmentation's name). `run` reads the fit and its recipe from the store and stops if there is
+  none, or if the frozen recipe lacks a key this chaintrack needs.
 - `run` writes each trench's tracks into the experiment group, beside its pixels:
   `trench_NNNN/tracks/chain_S1.geff` and the masks it chose, `labels/tracks.chain_S1` (`--out` names
   another run). It never writes `curation/`: mm-track copies a trench there at its first edit, so
   re-running replaces only tracker output. The run's record, `attrs.pymmm.tracks[<out>]`, holds the
-  recipe as given, the fit, the parameters as used (pixels and frames), the store's calibration
-  and chaintrack's commit.
+  fit, the fit's recipe, the parameters as used (pixels and frames), the store's calibration and
+  chaintrack's commit; a run continued later keeps its record and notes when it was continued.
 - `tools/curation_score.py` scores runs against the Reviewed curations in the experiment group,
   tolerating what a curation can't pin down (cells cut off at the bottom, divisions a frame or two
   apart). `tools/evaluate.py` scores runs against a curated collection, and `tools/frames_links.py`

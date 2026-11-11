@@ -38,18 +38,27 @@ Where the base merges a side cell into a chain cell and an alternative segmentat
 apart, that cut is used (see split_side). Their tracks are not written (the recipe's write_side
 writes them, as runs before 2026-11-09 did).
 
-The constants set by hand are a recipe (--recipe FILE, a toml; phage-signatures keeps
+The constants set by hand are a recipe (a toml; phage-signatures keeps
 recipes/tracking/chain.toml), in µm and minutes, so one recipe serves every magnification and
 frame rate: chaintrack reads the store's pixel size and frame interval and works in pixels and
 frames (RECIPE_KEYS says how each key is converted; lengths counted in pixels become whole
 pixels, a probability per minute becomes the probability over one frame, and the segmentation
 error probabilities stay per frame). Every key is required, and unknown keys are refused.
+Only `fit` reads the recipe file (fit --recipe FILE): it freezes the recipe in the store's fit
+record, and `run` and `follow` use that copy, so editing the file for another experiment cannot
+change this one's tracks. Another recipe for this experiment is another fit, under its own name
+(--fit NAME). A fit that a run has used is never overwritten, and a run is continued only with
+the fit, segmentation and alternatives it was started with.
 
-Fitted without labels: growth, length noise, gap noise, length at division, jump size. Each store
+Fitted without labels: growth, length noise, length at division, jump size. Each store
 has its own fit: `fit` measures them on that store's trenches and records them in the store,
 attrs.pymmm.fits[<fit>] (in µm and minutes, with the trenches used, the recipe and chaintrack's
 commit; --fit NAME, default the segmentation's name), and `run` reads them from there. A store's
 first fit starts from the recipe's [fit_start], a later one from the store's last.
+The gap noise (how much the gap above a cell changes from one frame to the next) is not fitted:
+it is the recipe's sigma_gap_um. Gap changes are whole pixels and more than half of them are 0,
+so the robust spread the fit uses reads them as no noise at all, at any magnification; as a
+plain spread they are 0.07 µm at 40x (20261005_pbs_psc_yfp_ty013) and at 100x alike.
 
 The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
@@ -58,18 +67,21 @@ beside it, as the run <out> (default chain_S1): the GEFF tracks/<out>.geff and t
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
 edit), so re-running replaces tracker output only. `follow` does the same for each trench as soon
 as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is still segmenting the others.
-A run's record in the store (attrs.pymmm.tracks[<out>]) holds the recipe as given, the fit, the
+A run's record in the store (attrs.pymmm.tracks[<out>]) holds the fit, the fit's recipe, the
 parameters as used (pixels and frames), the store's calibration and chaintrack's commit.
 
     cd /data/phage-signatures
-    S="--store 20261005_pbs_psc_yfp_ty013.zarr --recipe recipes/tracking/chain.toml --seg pc_affinity_ensemble"
-    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S
+    S="--store 20261005_pbs_psc_yfp_ty013.zarr --seg pc_affinity_ensemble"
+    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/chain.toml
     pixi run -e seg python external/chaintrack/chain.py run 0-9 $S
     pixi run -e seg python external/chaintrack/chain.py follow 0-436 $S --out chain_alt_S1
     pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --base-only --out chain_base_S1
 
-A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) is a run
-with another recipe file.
+A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) needs a fit
+made with another recipe file:
+
+    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/wide.toml --fit wide
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --fit wide --out chain_wide_S1
 """
 import json
 import subprocess
@@ -95,16 +107,26 @@ def option(flag):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
 
 
+USAGE = ("chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME]\n"
+         "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN]")
+# what to do: fit, run or follow
+COMMAND = sys.argv[1] if len(sys.argv) > 1 else ""
+if COMMAND not in ("fit", "run", "follow"):
+    sys.exit(USAGE)
 # the experiment group to track: one OME-Zarr image per trench (--store PATH)
 STORE = option("--store")
-# the constants set by hand, in µm and minutes (--recipe FILE)
-RECIPE_FILE = option("--recipe")
 # which segmentation's masks to track (--seg NAME)
 SEG = option("--seg")
-for _flag, _value in (("--store", STORE), ("--recipe", RECIPE_FILE), ("--seg", SEG)):
+# the constants set by hand, in µm and minutes (--recipe FILE). Only `fit` reads the file: it freezes
+# the recipe in the store's fit record, and `run` and `follow` take it from there, so a recipe file
+# edited later for another experiment cannot change this experiment's tracks
+RECIPE_FILE = option("--recipe")
+for _flag, _value in (("--store", STORE), ("--seg", SEG)) + ((("--recipe", RECIPE_FILE),) if COMMAND == "fit" else ()):
     if _value is None:
-        sys.exit(f"chain.py: give {_flag} (chain.py <fit|run|follow> <trenches> --store <experiment>.zarr "
-                 "--recipe <file> --seg <segmentation>)")
+        sys.exit(f"chain.py: give {_flag}\n{USAGE}")
+if COMMAND != "fit" and RECIPE_FILE is not None:
+    sys.exit(f"chain.py: {COMMAND} takes no --recipe: it uses the recipe frozen in the store's fit. For another "
+             "recipe, fit again under a new name (fit ... --recipe <file> --fit NAME) and track with --fit NAME")
 STORE = Path(STORE)
 # the fit to use, or to make: the store's record attrs.pymmm.fits[<fit>] (--fit NAME, default the segmentation's name)
 FIT = option("--fit") or SEG
@@ -125,6 +147,7 @@ RECIPE_KEYS = {
     "beam": ("beam", "count"),
     "max_length_change": ("max_length_change", "same"),
     "sigma_daughter": ("sigma_daughter", "same"),
+    "sigma_gap_um": ("sigma_gap", "px"),
     "p_jump_per_min": ("p_jump", "per frame"),
     "p_slide_per_min": ("p_slide", "per frame"),
     "p_lysis_per_min": ("p_lysis", "per frame"),
@@ -161,29 +184,34 @@ RECIPE_KEYS = {
 FIT_KEYS = {
     "growth_per_min": ("growth", "log per frame"),   # log length per frame
     "sigma_end_um": ("sigma_end", "px"),             # noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
-    "sigma_gap_um": ("sigma_gap", "px"),             # noise of the gap between neighbours
     "div_um": ("div_mu", "px"),                      # length at division
     "div_sd_um": ("div_sd", "px"),
     "jump_scale_um": ("jump_scale_px", "px"),        # typical size of a jump
 }
 
 
-def load_recipe(path):
-    """The recipe file's constants and its [fit_start] values. Every key must be there, none
-    unknown, each a number (or true/false for a flag, a whole number for a count)."""
-    with open(path, "rb") as file:
-        raw = tomllib.load(file)
-    start = raw.pop("fit_start", {})
+def check_recipe(constants, start, where):
+    """Stop unless a recipe is one this chaintrack can use: every key there, none unknown, each a
+    number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
+    or None for a recipe that carries none (one frozen in a store)."""
     number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
     right = {"flag": lambda v: isinstance(v, bool), "count": lambda v: isinstance(v, int) and not isinstance(v, bool)}
     problems = []
-    for prefix, table, keys in (("", raw, RECIPE_KEYS), ("fit_start.", start, FIT_KEYS)):
+    for prefix, table, keys in (("", constants, RECIPE_KEYS),) + ((("fit_start.", start, FIT_KEYS),) if start is not None else ()):
         problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
         problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
         problems += [f"{prefix}{k} = {v!r}: not a {'number' if keys[k][1] not in right else keys[k][1]}"
                      for k, v in table.items() if k in keys and not right.get(keys[k][1], number)(v)]
     if problems:
-        sys.exit(f"chain.py: recipe {path}:\n  " + "\n  ".join(problems))
+        sys.exit(f"chain.py: {where}:\n  " + "\n  ".join(problems))
+
+
+def load_recipe(path):
+    """The recipe file's constants and its [fit_start] values, checked."""
+    with open(path, "rb") as file:
+        raw = tomllib.load(file)
+    start = raw.pop("fit_start", {})
+    check_recipe(raw, start, f"recipe {path}")
     return raw, start
 
 
@@ -225,10 +253,21 @@ def code_version():
     return {"commit": commit, "dirty": None if status is None else bool(status)}
 
 
-RECIPE, FIT_START = load_recipe(RECIPE_FILE)
 PX, DT = calibration(open_experiment(STORE))   # µm per pixel, minutes per frame
 # the store's record of the fit: None until `fit` has run on this store
 FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
+if COMMAND == "fit":
+    RECIPE, FIT_START = load_recipe(RECIPE_FILE)
+else:
+    # tracking needs the store's own fit, and uses the recipe frozen in it, never a file
+    if FIT_RECORD is None:
+        sys.exit(f"chain.py: {STORE.name} has no fit {FIT!r} (its fits: {sorted(records(open_experiment(STORE), 'fits')) or 'none'}): "
+                 "run `chain.py fit <trenches> ... --recipe <file>` on it first")
+    if not FIT_RECORD.get("recipe"):
+        sys.exit(f"chain.py: the fit {FIT!r} of {STORE.name} holds no recipe: fit again, under a new name")
+    RECIPE, FIT_START = dict(FIT_RECORD["recipe"]), None
+    check_recipe(RECIPE, None, f"the recipe frozen in the fit {FIT!r} of {STORE.name} is not one this chaintrack can use "
+                 f"(the fit was made by chaintrack {(FIT_RECORD.get('chaintrack') or {}).get('commit')}); fit again, under a new name")
 # The parameters as the tracker uses them, in pixels and frames: the recipe's constants, and the
 # fitted ones from the store's fit (from the recipe's [fit_start] until there is one)
 P = {p: to_pixels(RECIPE[k], how) for k, (p, how) in RECIPE_KEYS.items()}
@@ -1073,6 +1112,12 @@ def fit(trenches, rounds=3):
     from pymmm.store.experiment_group import segmentation, update_experiment
 
     root = open_experiment(STORE)
+    # runs made before fits were recorded used the fit named after their segmentation
+    used_by = [name for name, rec in records(root, "tracks").items()
+               if (rec.get("fit") or {}).get("name", rec.get("segmentation")) == FIT]
+    if FIT_RECORD is not None and used_by:
+        sys.exit(f"chain.py: the fit {FIT!r} of {STORE.name} was used by the run(s) {', '.join(used_by)}, so it stays as it is: "
+                 "give this fit another name with --fit")
     started = f"the store's fit of {FIT_RECORD['created']}" if FIT_RECORD else "the recipe's fit_start"
     print(f"fit {FIT} of {STORE.name} ({PX:.4f} µm per pixel, {DT:.4f} min per frame), starting from {started}", flush=True)
     used, labs = [], []
@@ -1094,20 +1139,18 @@ def fit(trenches, rounds=3):
             P["growth"] = float(np.median(growth))
         if len(lens) > 100:
             P["sigma_end"] = max(mad(lens) / np.sqrt(2.0), 0.5)
-        if len(gaps) > 100:
-            P["sigma_gap"] = max(mad(gaps), 0.5)
         if len(divlen) > 20:
             P["div_mu"] = float(np.median(divlen)); P["div_sd"] = max(mad(divlen), 0.05 * P["div_mu"])
         if len(jumps) > 20:
             P["jump_scale_px"] = float(np.mean(jumps))
         print(f"round {r + 1}: {len(labs)} trenches, {time.perf_counter() - start:.0f} s; events {tot}; "
-              f"growth {P['growth']:.4f}, end noise {P['sigma_end']:.2f} px, gap noise {P['sigma_gap']:.2f} px, "
+              f"growth {P['growth']:.4f}, end noise {P['sigma_end']:.2f} px, gap noise {P['sigma_gap']:.2f} px (the recipe's), "
               f"division {P['div_mu']:.1f} ± {P['div_sd']:.1f} px, jump scale {P['jump_scale_px']:.1f} px", flush=True)
     # a fresh handle, so records written to the store while this ran are kept
     update_experiment(open_experiment(STORE, mode="r+"), "fits", FIT, {
         "tracker": TRACKER, "segmentation": SEG, "values": fitted(),
         "trenches": used, "frames": "all", "rounds": rounds, "started_from": started,
-        "recipe": RECIPE, "pixel_size_um": PX, "frame_interval_min": DT,
+        "recipe": RECIPE, "fit_start": FIT_START, "pixel_size_um": PX, "frame_interval_min": DT,
         "made_by": "external/chaintrack/chain.py fit", "chaintrack": code_version(),
         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
     print(f"fit recorded in {STORE.name}, attrs.pymmm.fits[{FIT!r}]: "
@@ -1180,31 +1223,40 @@ def alternatives(names):
     return list(range(1, len(names)))
 
 
-def need_fit():
-    """Tracking needs the store's own fit."""
-    if FIT_RECORD is None:
-        have = sorted(records(open_experiment(STORE), "fits")) or "none"
-        sys.exit(f"chain.py: {STORE.name} has no fit {FIT!r} (its fits: {have}): run `chain.py fit <trenches>` on it first")
-
-
 def record_run(root):
-    """Note this run in the experiment group: its segmentation, the recipe as given (µm and
-    minutes), the fit it used, and the parameters as the tracker used them (pixels and frames)."""
+    """Note this run in the experiment group: its segmentation, the fit it used, that fit's recipe
+    (µm and minutes), and the parameters as the tracker used them (pixels and frames).
+
+    A run already in the store is continued only with the same fit (and so the same recipe), the
+    same segmentation and the same alternatives, so that one run is never tracked two ways; its
+    record is kept and the continuation noted in it."""
     from pymmm.store.experiment_group import update_experiment
 
+    fit = {"name": FIT, "values": {k: FIT_RECORD["values"][k] for k in FIT_KEYS}, "created": FIT_RECORD.get("created")}
+    alts = "none" if BASE_ONLY else (ALTS or "all")
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    old = records(root, "tracks").get(OUT)
+    if old is not None:
+        old_fit = old.get("fit") or {}
+        same = {"fit": old_fit.get("name") == FIT and old_fit.get("created") == fit["created"],
+                "segmentation": old.get("segmentation") == SEG, "alternatives": old.get("alternatives") == alts}
+        if not all(same.values()):
+            sys.exit(f"chain.py: the run {OUT!r} of {STORE.name} was made with another "
+                     f"{', '.join(k for k, v in same.items() if not v)}: give this run another name with --out")
+        update_experiment(root, "tracks", OUT, {
+            **old, "continued": [*old.get("continued", []), {"at": now, "chaintrack": code_version()}]})
+        return
     update_experiment(root, "tracks", OUT, {
         "tracker": TRACKER, "segmentation": SEG, "params": json.loads(json.dumps(P, default=str)),
-        "recipe": RECIPE, "fit": {"name": FIT, "values": FIT_RECORD["values"], "created": FIT_RECORD.get("created")},
-        "pixel_size_um": PX, "frame_interval_min": DT,
-        "alternatives": "none" if BASE_ONLY else (ALTS or "all"), "made_by": "external/chaintrack/chain.py",
-        "chaintrack": code_version(), "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        "recipe": RECIPE, "fit": fit, "pixel_size_um": PX, "frame_interval_min": DT,
+        "alternatives": alts, "made_by": "external/chaintrack/chain.py",
+        "chaintrack": code_version(), "created": now})
 
 
 def run(trenches, root=None):
     from pymmm.store.experiment_group import segmentation
 
     if root is None:
-        need_fit()
         root = open_experiment(STORE, mode="r+")
         record_run(root)
     for tid in trenches:
@@ -1223,7 +1275,6 @@ def follow(trenches):
     until every one is tracked."""
     from pymmm.store.experiment_group import has_segmentation
 
-    need_fit()
     root = open_experiment(STORE, mode="r+")
     record_run(root)
     left = list(trenches)
@@ -1254,12 +1305,9 @@ def parse(args):
 
 
 if __name__ == "__main__":
-    commands = {"fit": fit, "run": run, "follow": follow}
-    if len(sys.argv) < 2 or sys.argv[1] not in commands:
-        sys.exit("chain.py <fit|run|follow> <trenches> --store <experiment>.zarr --recipe <file> --seg <segmentation>")
     args = sys.argv[2:]
     for flag, takes in (("--store", 1), ("--recipe", 1), ("--seg", 1), ("--fit", 1), ("--out", 1), ("--alts", 1),
                         ("--base-only", 0)):
         if flag in args:
             k = args.index(flag); args = args[:k] + args[k + 1 + takes:]
-    commands[sys.argv[1]](parse(args))
+    {"fit": fit, "run": run, "follow": follow}[COMMAND](parse(args))
