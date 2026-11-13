@@ -3,3 +3,4 @@
 ba = "ba"        # box of mask a, as in ba / bb
 nd = "nd"        # ND2
 ome = "ome"      # OME-Zarr
+writeable = "writeable"  # numpy ndarray.flags.writeable

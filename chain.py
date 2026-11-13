@@ -816,6 +816,22 @@ def split_side(lab, centre, H, alts=()):
     return obs, tracks, side_labels
 
 
+@numba.njit(cache=True)
+def n_common(a, b):
+    """How many values two sorted arrays of distinct values share."""
+    i = j = n = 0
+    while i < len(a) and j < len(b):
+        if a[i] < b[j]:
+            i += 1
+        elif a[i] > b[j]:
+            j += 1
+        else:
+            n += 1
+            i += 1
+            j += 1
+    return n
+
+
 def label_groups(frame):
     """(label, flat pixel indices) for each label of one frame."""
     flat = frame.ravel()
@@ -874,6 +890,7 @@ class Frame:
             info.append((o[0], o[1], len(info), o[3], o[4], o[5]))
             pix.append(groups[o[2]])
         nb = len(info)
+        base_area = np.array([len(p) for p in pix], np.int64)
         idimg = np.zeros(base_frame.size, np.int64)
         for b in range(nb):
             idimg[pix[b]] = b + 1
@@ -890,13 +907,13 @@ class Frame:
                 same = -1
                 cnt = np.bincount(idimg[q], minlength=nb + 1)
                 cnt[0] = 0
-                if sum(cnt[b + 1] >= 0.3 * len(pix[b]) for b in range(nb)) >= 2:
+                if np.count_nonzero(cnt[1:] >= 0.3 * base_area) >= 2:
                     continue  # a merge of base masks: "one cell cut into two masks" covers it
                 b = int(np.argmax(cnt)) - 1
                 if b >= 0 and cnt[b + 1] / (len(q) + len(pix[b]) - cnt[b + 1]) >= 0.8:
                     same = b
                 for e in extras if same < 0 else ():
-                    inter = np.intersect1d(q, pix[e], assume_unique=True).size
+                    inter = n_common(q, pix[e])
                     if inter / (len(q) + len(pix[e]) - inter) >= 0.8:
                         same = e
                         break
@@ -934,7 +951,7 @@ class Frame:
                 if cnt[b + 1] >= 0.3 * min(len(pix[e]), len(pix[b])):
                     root[find(e)] = find(b)
             for e2 in extras[:k]:
-                inter = np.intersect1d(pix[e], pix[e2], assume_unique=True).size
+                inter = n_common(pix[e], pix[e2])
                 if inter >= 0.3 * min(len(pix[e]), len(pix[e2])):
                     root[find(e)] = find(e2)
         members = {}
@@ -1423,28 +1440,70 @@ def visible_end(lab):
     return int(np.median(low)) + 1 if len(low) else H
 
 
+@numba.njit(cache=True)
+def _clean_frames(lab, cut, edge, shortest):
+    """clean()'s work, frame by frame: each mask's top and bottom rows, its area and its area
+    from row `cut` down, then the masks to drop set to 0, in place.
+    """
+    T, H, W = lab.shape
+    n = int(lab.max()) + 1
+    top = np.zeros(n, np.int64)
+    bottom = np.zeros(n, np.int64)
+    area = np.zeros(n, np.int64)
+    below = np.zeros(n, np.int64)
+    drop = np.zeros(n, np.bool_)
+    seen = np.zeros(n, np.int64)
+    for t in range(T):
+        k = 0
+        for y in range(H):
+            for x in range(W):
+                m = lab[t, y, x]
+                if m == 0:
+                    continue
+                if area[m] == 0:
+                    top[m] = y
+                    seen[k] = m
+                    k += 1
+                bottom[m] = y
+                area[m] += 1
+                if y >= cut:
+                    below[m] += 1
+        any_drop = False
+        for i in range(k):
+            m = seen[i]
+            if (
+                (bottom[m] - top[m] + 1) < shortest
+                or 2 * below[m] > area[m]
+                or bottom[m] >= edge
+            ):
+                drop[m] = True
+                any_drop = True
+        if any_drop:
+            for y in range(H):
+                for x in range(W):
+                    if drop[lab[t, y, x]]:
+                        lab[t, y, x] = 0
+        for i in range(k):
+            m = seen[i]
+            area[m] = 0
+            below[m] = 0
+            drop[m] = False
+
+
 def clean(lab):
     """The masks the tracker sees: whole masks only, without those that have more than half
     their area in the bottom crop_bottom_px rows, without those reaching the bottom clear_bottom_px
     rows, and without those shorter than the smallest plausible newborn, (div_mu - 3 div_sd) / 2.
+    Cleans lab in place (copied first if it is read only) and returns it.
     """
-    lab = np.array(lab)
+    lab = np.asarray(lab)
+    if not lab.flags.writeable:
+        lab = lab.copy()
     cut = lab.shape[1] - P["crop_bottom_px"]
     edge = lab.shape[1] - P["clear_bottom_px"] if P["clear_bottom_px"] else lab.shape[1]
     shortest = (P["div_mu"] - 3 * P["div_sd"]) / 2
-    for f in lab:
-        ids = np.unique(f)
-        ids = ids[ids > 0]
-        if not len(ids):
-            continue
-        rows, cols = np.nonzero(f)
-        which = f[rows, cols]
-        lo = np.asarray(ndi.minimum(rows, which, ids))
-        hi = np.asarray(ndi.maximum(rows, which, ids))
-        below = np.asarray(ndi.mean(rows >= cut, which, ids))
-        drop = ids[((hi - lo + 1) < shortest) | (below > 0.5) | (hi >= edge)]
-        if len(drop):
-            f[np.isin(f, drop)] = 0
+    if lab.size:
+        _clean_frames(lab, cut, edge, float(shortest))
     return lab
 
 
