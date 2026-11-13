@@ -56,11 +56,21 @@ Run from the phage-signatures repo, whose pixi `seg` environment it uses:
   segmentation's name). `run` reads the fit and its recipe from the store and stops if there is
   none, or if the frozen recipe lacks a key this chaintrack needs.
 - `run` writes each trench's tracks into the experiment group, beside its pixels:
-  `trench_NNNN/tracks/chain_S1.geff` and the masks it chose, `labels/tracks.chain_S1` (`--out` names
-  another run). It never writes `curation/`: mm-track copies a trench there at its first edit, so
+  `trench_NNNN/tracks/chain.geff` and the masks it chose, `labels/tracks.chain` (`--out` names
+  another run; until 2026-11-13 the default was `chain_S1`). It never writes `curation/`: mm-track copies a trench there at its first edit, so
   re-running replaces only tracker output. The run's record, `attrs.pymmm.tracks[<out>]`, holds the
   fit, the fit's recipe, the parameters as used (pixels and frames), the store's calibration and
   chaintrack's commit; a run continued later keeps its record and notes when it was continued.
+- `fit`, `run` and `follow` track several trenches at once, each in its own process. Tracks do not
+  depend on how many: 12 trenches tracked one at a time and 12 at once give the same files.
+  - How many is set by memory, not cores: a trench needs about 2.5 times the size of the masks it
+    reads (6.3 GB for 14 hypotheses of 848 frames of 944 × 128 pixels). chaintrack takes as many
+    as fit in 80% of the memory free when it starts, at most one per core; `--workers N` sets it
+    by hand, and `--workers 1` tracks one at a time in the one process.
+  - A trench that fails is reported, the others go on, and the command ends with an error naming
+    those that failed.
+  - If a worker process dies (killed when the machine runs out of memory, say), the command stops
+    with an error at once. The trenches printed by then are written; run again for the others.
 - `tools/curation_score.py` scores runs against the Reviewed curations in the experiment group,
   tolerating what a curation can't pin down (cells cut off at the bottom, divisions a frame or two
   apart). `tools/evaluate.py` scores runs against a curated collection, and `tools/frames_links.py`

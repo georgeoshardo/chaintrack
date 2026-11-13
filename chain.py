@@ -12,7 +12,7 @@ The trench is an ordered chain of cells from the closed end. Between frames:
     a mask, so a lysed or unseen cell's space is expected to stay, and the column closing
     over it is priced as a jump, not forbidden;
   - no new cells appear after the first frame.
-The masks (S1 only, shapes only, no image) are observations, cleaned first: any mask shorter
+The masks (shapes only, no image) are observations, cleaned first: any mask shorter
 than the smallest plausible newborn, (div_mu - 3 div_sd) / 2, is removed whole, and with
 the recipe's crop_bottom_um so is a mask with more than half its area in those bottom rows (for
 crops that reach the halo at the trench opening; PyMMM's crops stop above it, so 0 by default),
@@ -63,27 +63,32 @@ plain spread they are 0.07 µm at 40x (20261005_pbs_psc_yfp_ty013) and at 100x a
 The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
 labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base first. `run` writes each trench's tracks
-beside it, as the run <out> (default chain_S1): the GEFF tracks/<out>.geff and the masks it chose,
+beside it, as the run <out> (default chain): the GEFF tracks/<out>.geff and the masks it chose,
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
 edit), so re-running replaces tracker output only. `follow` does the same for each trench as soon
 as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is still segmenting the others.
 A run's record in the store (attrs.pymmm.tracks[<out>]) holds the fit, the fit's recipe, the
 parameters as used (pixels and frames), the store's calibration and chaintrack's commit.
 
+Trenches are independent, so `fit`, `run` and `follow` track several at once, each in its own
+process: as many as the cores and the free memory allow, or --workers N. A trench's tracks do not
+depend on how many are tracked at once.
+
     cd /data/phage-signatures
     S="--store 20261005_pbs_psc_yfp_ty013.zarr --seg pc_affinity_ensemble"
     pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/chain.toml
     pixi run -e seg python external/chaintrack/chain.py run 0-9 $S
-    pixi run -e seg python external/chaintrack/chain.py follow 0-436 $S --out chain_alt_S1
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --base-only --out chain_base_S1
+    pixi run -e seg python external/chaintrack/chain.py follow 0-436 $S --out chain_alt
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --base-only --out chain_base
 
 A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) needs a fit
 made with another recipe file:
 
     pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/wide.toml --fit wide
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --fit wide --out chain_wide_S1
+    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --fit wide --out chain_wide
 """
 import json
+import os
 import subprocess
 import sys
 import time
@@ -107,8 +112,8 @@ def option(flag):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
 
 
-USAGE = ("chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME]\n"
-         "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN]")
+USAGE = ("chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--workers N]\n"
+         "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]")
 # what to do: fit, run or follow
 COMMAND = sys.argv[1] if len(sys.argv) > 1 else ""
 if COMMAND not in ("fit", "run", "follow"):
@@ -135,7 +140,11 @@ FIT = option("--fit") or SEG
 # uses only those, --base-only the base alone
 ALTS = option("--alts").split(",") if "--alts" in sys.argv else None
 BASE_ONLY = "--base-only" in sys.argv
-OUT = option("--out") or f"{TRACKER}_S1"
+OUT = option("--out") or TRACKER
+# how many trenches to track at once (--workers N); unset, as many as the cores and the free memory allow
+WORKERS = option("--workers")
+if WORKERS is not None and not (WORKERS.isdigit() and int(WORKERS) >= 1):
+    sys.exit(f"chain.py: --workers takes a whole number of at least 1, not {WORKERS!r}")
 
 # The recipe's keys: the parameter each becomes (in pixels and frames, as the tracker uses them) and how.
 #   same          copied                      flag    copied, true or false       count   copied, a whole number
@@ -1106,6 +1115,50 @@ def stats_of(recs):
     return tot, lens, gaps, divlen, growth, jumps
 
 
+_POOL = None      # the worker processes, started at the first use
+_WORKERS = None   # how many trenches `run` and `follow` track at once, set at the first batch
+_ROOT = None      # this process's handle on the store, for writing a trench's tracks
+
+
+def workers_for(tasks, bytes_each):
+    """How many trenches to track at once: --workers, or as many as the cores and the free memory
+    allow when each needs about `bytes_each` (never more than there are trenches)."""
+    if WORKERS is not None:
+        return max(1, min(int(WORKERS), tasks))
+    try:
+        with open("/proc/meminfo") as f:
+            free = next(int(line.split()[1]) * 1024 for line in f if line.startswith("MemAvailable"))
+    except (OSError, StopIteration):
+        return 1    # free memory unknown: one at a time unless --workers says otherwise
+    return max(1, min(os.cpu_count() or 1, int(0.8 * free / bytes_each), tasks))
+
+
+def in_parallel(function, tasks, workers):
+    """function(task) for each task, in the tasks' order, `workers` at a time. Each worker is a
+    fresh process that imports this file with the same command line, so it holds the same store,
+    fit and parameters. The processes are started at the first call and serve every later one,
+    so the first call's `workers` stands.
+
+    A worker that dies (killed when the machine runs out of memory, say) raises BrokenProcessPool
+    here and stops the others: a ProcessPoolExecutor notices, where multiprocessing.Pool would
+    wait for that trench for ever."""
+    global _POOL
+    if workers <= 1 and _POOL is None:
+        return map(function, tasks)
+    if _POOL is None:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        _POOL = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+    return _POOL.map(function, tasks)
+
+
+def fit_track(task):
+    """One trench's statistics for a round of the fit, tracked with that round's parameters."""
+    lab, parameters = task
+    P.update(parameters)
+    return stats_of(track([lab])[0])
+
+
 def fit(trenches, rounds=3):
     """Measure the fitted parameters on these trenches' own tracks (the base hypothesis, tracked
     with the current values, `rounds` times over), and record them in the store as its fit FIT."""
@@ -1126,12 +1179,15 @@ def fit(trenches, rounds=3):
         if lab.any():
             used.append(int(t)); labs.append(clean(lab))
     mad = lambda v: 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
+    # allow each trench 4 times its masks' size (a guess: the fit reads one hypothesis, and its
+    # memory was not measured)
+    workers = workers_for(len(labs), 4 * max((lab.nbytes for lab in labs), default=1))
     for r in range(rounds):
         tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
         lens, gaps, divlen, growth, jumps = [], [], [], [], []
         start = time.perf_counter()
-        for lab in labs:
-            a, l, g, d, gr, ju = stats_of(track([lab])[0])
+        # the trenches' statistics are gathered in the trenches' order, however many are tracked at once
+        for a, l, g, d, gr, ju in in_parallel(fit_track, [(lab, dict(P)) for lab in labs], workers):
             for k in tot:
                 tot[k] += a[k]
             lens += l; gaps += g; divlen += d; growth += gr; jumps += ju
@@ -1253,21 +1309,60 @@ def record_run(root):
         "chaintrack": code_version(), "created": now})
 
 
-def run(trenches, root=None):
+def track_trench(tid):
+    """Track one trench and write its tracks into the store: the line to print, and the error if
+    it failed. A trench writes only inside its own folder, so several can be written at once."""
     from pymmm.store.experiment_group import segmentation
 
-    if root is None:
-        root = open_experiment(STORE, mode="r+")
-        record_run(root)
-    for tid in trenches:
-        names, labels = segmentation(root, tid, SEG)
+    global _ROOT
+    try:
+        if _ROOT is None:
+            _ROOT = open_experiment(STORE, mode="r+")
+        names, labels = segmentation(_ROOT, tid, SEG)
         use = [0] + alternatives(names)
         labs = [clean(np.asarray(labels[h][...])) for h in use]
         start = time.perf_counter()
         recs, side, frames = track(labs)
-        print(f"trench {tid}: {len(use)} hypotheses, {time.perf_counter() - start:.0f} s; events {stats_of(recs)[0]}", flush=True)
-        write(root, tid, labs[0], recs, side, frames)
+        seconds = time.perf_counter() - start
+        write(_ROOT, tid, labs[0], recs, side, frames)
+        return f"trench {tid}: {len(use)} hypotheses, {seconds:.0f} s; events {stats_of(recs)[0]}", None
+    except Exception:   # noqa: BLE001 - one bad trench must not stop the others
+        import traceback
+        return f"trench {tid} failed", traceback.format_exc()
+
+
+def track_all(trenches, root, of=None):
+    """Track these trenches several at a time, printing each one's line in the trenches' order;
+    the trenches that failed. `of`: how many trenches the whole job has, when these are only the
+    first of them (`follow`), so that enough workers are started for the rest."""
+    from pymmm.store.experiment_group import segmentation
+
+    global _WORKERS
+    if not trenches:
+        return []
+    if _WORKERS is None:
+        # A trench needs about 2.5 times the size of the masks it reads (measured: 6.3 to 6.5 GB for
+        # 14 hypotheses of 848 x 944 x 128 uint16), which is what limits how many are tracked at once
+        names, labels = segmentation(root, trenches[0], SEG)
+        each = 2.5 * (1 + len(alternatives(names))) * labels[0].nbytes
+        _WORKERS = workers_for(of or len(trenches), each)
+        print(f"tracking {_WORKERS} trenches at a time (about {each / 1e9:.1f} GB each)", flush=True)
+    workers = _WORKERS
+    failed = []
+    for tid, (line, error) in zip(trenches, in_parallel(track_trench, trenches, workers)):
+        print(line if error is None else f"{line}:\n{error}", flush=True)
+        if error is not None:
+            failed.append(tid)
+    return failed
+
+
+def run(trenches):
+    root = open_experiment(STORE, mode="r+")
+    record_run(root)
+    failed = track_all(trenches, root)
     print(f"tracks: {STORE}/trench_NNNN/tracks/{OUT}.geff", flush=True)
+    if failed:
+        sys.exit(f"chain.py: {len(failed)} of {len(trenches)} trenches failed: {' '.join(map(str, failed))}")
 
 
 def follow(trenches):
@@ -1280,12 +1375,7 @@ def follow(trenches):
     left = list(trenches)
     while left:
         ready = [t for t in left if has_segmentation(root, t, SEG)]
-        for t in ready:
-            try:
-                run([t], root)
-            except Exception:   # noqa: BLE001 - one bad trench must not stop the others
-                import traceback
-                print(f"trench {t} failed:\n{traceback.format_exc()}", flush=True)
+        track_all(ready, root, of=len(trenches))
         left = [t for t in left if t not in ready]
         if left and not ready:
             time.sleep(30)
@@ -1307,7 +1397,19 @@ def parse(args):
 if __name__ == "__main__":
     args = sys.argv[2:]
     for flag, takes in (("--store", 1), ("--recipe", 1), ("--seg", 1), ("--fit", 1), ("--out", 1), ("--alts", 1),
-                        ("--base-only", 0)):
+                        ("--base-only", 0), ("--workers", 1)):
         if flag in args:
             k = args.index(flag); args = args[:k] + args[k + 1 + takes:]
-    {"fit": fit, "run": run, "follow": follow}[COMMAND](parse(args))
+    from concurrent.futures.process import BrokenProcessPool
+
+    try:
+        {"fit": fit, "run": run, "follow": follow}[COMMAND](parse(args))
+    except BrokenProcessPool:
+        # the trenches being tracked at that moment were stopped part-way through writing
+        left = ("No fit was recorded" if COMMAND == "fit" else
+                "The trenches printed above are written; run again for the others")
+        sys.exit("chain.py: a worker process died, most likely killed because the machine ran out of memory, so "
+                 f"this stopped. {left}. Give a smaller --workers if memory was short")
+    finally:
+        if _POOL is not None:   # trenches not started yet are dropped; those being tracked finish first
+            _POOL.shutdown(wait=True, cancel_futures=True)
