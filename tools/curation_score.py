@@ -33,6 +33,7 @@ centre line is taken from the base hypothesis of the curated run's segmentation.
 EDGE and CENTRE_PX are in pixels and were set for a 40x experiment (0.108 µm per pixel); change
 them for other magnifications.
 """
+
 import sys
 from collections import Counter, defaultdict
 
@@ -42,28 +43,35 @@ import zarr
 from pymmm.store.experiment_group import hypotheses, open_experiment, records
 
 if len(sys.argv) < 2 or "--store" not in sys.argv or "--curation" not in sys.argv:
-    sys.exit("usage: curation_score.py RUN[,RUN...] --store experiment.zarr --curation CURATED_RUN "
-             "[--trenches 0,2,3] [--v]")
+    sys.exit(
+        "usage: curation_score.py RUN[,RUN...] --store experiment.zarr --curation CURATED_RUN "
+        "[--trenches 0,2,3] [--v]"
+    )
 RUNS = sys.argv[1].split(",")
 CURRUN = sys.argv[sys.argv.index("--curation") + 1]
 S = STORE = sys.argv[sys.argv.index("--store") + 1]
 _root = open_experiment(S)
 if CURRUN not in records(_root, "tracks"):
-    sys.exit(f"curation_score.py: {S} records no run {CURRUN!r} (its runs: {sorted(records(_root, 'tracks'))})")
+    sys.exit(
+        f"curation_score.py: {S} records no run {CURRUN!r} (its runs: {sorted(records(_root, 'tracks'))})"
+    )
 SEG = records(_root, "tracks")[CURRUN]["segmentation"]
-BASE = f"{SEG}.{hypotheses(_root, SEG)[0]}"   # the label image the centre line is taken from
+BASE = f"{SEG}.{hypotheses(_root, SEG)[0]}"  # the label image the centre line is taken from
 VERBOSE = "--v" in sys.argv
-EDGE = 6          # masks reaching the bottom EDGE rows are cut off by the crop: not judged
-CENTRE_PX = 6     # masks further than this from the centre line are side objects
+EDGE = 6  # masks reaching the bottom EDGE rows are cut off by the crop: not judged
+CENTRE_PX = 6  # masks further than this from the centre line are side objects
 DIV_TOL = 2
-PAIR_IOU = 0.65  # a merge of two cells has IoU about 0.5 with each: it pairs with neither
+PAIR_IOU = (
+    0.65  # a merge of two cells has IoU about 0.5 with each: it pairs with neither
+)
 
 
 def graph(path):
     g = zarr.open_group(path, mode="r")
     ids = np.asarray(g["nodes/ids"][:])
     p = g["nodes/props"]
-    t = np.asarray(p["t/values"][:]).astype(int); s = np.asarray(p["seg_id/values"][:]).astype(int)
+    t = np.asarray(p["t/values"][:]).astype(int)
+    s = np.asarray(p["seg_id/values"][:]).astype(int)
     pos = {int(i): k for k, i in enumerate(ids)}
     e = np.asarray(g["edges/ids"][:]).reshape(-1, 2)
     e = [(pos[int(a)], pos[int(b)]) for a, b in e]
@@ -84,7 +92,7 @@ def boxes(seg):
         ls, first = np.unique(v, return_index=True)
         bounds = list(first) + [len(v)]
         for k, l in enumerate(ls):
-            yy, xx = ys[bounds[k]:bounds[k + 1]], xs[bounds[k]:bounds[k + 1]]
+            yy, xx = ys[bounds[k] : bounds[k + 1]], xs[bounds[k] : bounds[k + 1]]
             out[(f, int(l))] = (int(yy.min()), int(yy.max()), len(yy), float(xx.mean()))
     return out
 
@@ -108,7 +116,9 @@ def match(segA, segB):
         for iou, la, lb in sorted(cand, reverse=True):
             if la in ua or lb in ub:
                 continue
-            out[(f, la)] = (f, lb); ua.add(la); ub.add(lb)
+            out[(f, la)] = (f, lb)
+            ua.add(la)
+            ub.add(lb)
     return out
 
 
@@ -129,7 +139,11 @@ class G:
         lone_ids = set(self.extra.get("div_one", []))
         gz = zarr.open_group(geff, mode="r")
         gid = np.asarray(gz["nodes/ids"][:])
-        self.lone = {key[k] for k in range(len(key)) if int(gid[k]) in lone_ids and key[k] in self.box}
+        self.lone = {
+            key[k]
+            for k in range(len(key))
+            if int(gid[k]) in lone_ids and key[k] in self.box
+        }
         for a, b in g["e"]:
             ka, kb = key[a], key[b]
             if ka in ok and kb in ok:
@@ -143,7 +157,7 @@ def judged(g, k, centre):
 
 
 def score(run, cur, centre):
-    m = match(run.seg, cur.seg)                     # run -> cur
+    m = match(run.seg, cur.seg)  # run -> cur
     minv = {v: k for k, v in m.items()}
     jr = {k for k in run.nodes if judged(run, k, centre)}
     jc = {k for k in cur.nodes if judged(cur, k, centre)}
@@ -156,7 +170,8 @@ def score(run, cur, centre):
         return p
 
     ok_r = {minv[k] for k in paired_c}
-    out = Counter(); events = []
+    out = Counter()
+    events = []
     for b in sorted(paired_c):
         pc = pred(cur, b, paired_c)
         pr = pred(run, minv[b], ok_r)
@@ -193,7 +208,9 @@ def score(run, cur, centre):
 
     div_r = set()
     for k in run.nodes:
-        mother = len(run.children.get(k, [])) == 2 or any(c in run.lone for c in run.children.get(k, []))
+        mother = len(run.children.get(k, [])) == 2 or any(
+            c in run.lone for c in run.children.get(k, [])
+        )
         if not mother:
             continue
         # the division, as the curated masks it lands on: the mother, its parent, its children
@@ -222,7 +239,8 @@ def score(run, cur, centre):
             found += 1
         else:
             events.append((k[0], "division-missed", k, None, k))
-    out["divisions"] = len(cur_divs); out["div_found"] = found
+    out["divisions"] = len(cur_divs)
+    out["div_found"] = found
     # run divisions with no curated division nearby
     cur_div_near = set()
     for k in cur_divs:
@@ -243,7 +261,7 @@ def score(run, cur, centre):
         if len(run.children.get(k, [])) == 2 and judged(run, k, centre):
             kids_judged = [c for c in run.children[k] if judged(run, c, centre)]
             if len(kids_judged) < 2:
-                continue        # a division at the bottom (a daughter cut off): not judged
+                continue  # a division at the bottom (a daughter cut off): not judged
             if not (k in m and m[k] in cur_div_near):
                 out["div_extra"] += 1
                 events.append((k[0], "division-extra", m.get(k), None, k))
@@ -251,13 +269,16 @@ def score(run, cur, centre):
 
 
 def centre_of(tid):
-    raw = np.asarray(zarr.open_array(f"{S}/trench_{tid:04d}/labels/{BASE}/0", mode="r")[:])
+    raw = np.asarray(
+        zarr.open_array(f"{S}/trench_{tid:04d}/labels/{BASE}/0", mode="r")[:]
+    )
     return float(np.median(np.nonzero(raw)[2]))
 
 
 def reviewed_trenches():
     import glob
     import re
+
     out = []
     for p in sorted(glob.glob(f"{S}/trench_*/curation/{CURRUN}.geff")):
         tid = int(re.search(r"trench_(\d+)", p).group(1))
@@ -267,28 +288,61 @@ def reviewed_trenches():
 
 
 if __name__ == "__main__":
-    trenches = ([int(x) for x in sys.argv[sys.argv.index("--trenches") + 1].split(",")]
-                if "--trenches" in sys.argv else reviewed_trenches())
-    cols = ["agree", "shift", "root", "extra", "skip", "missed", "extra_masks", "side", "divisions", "div_found", "div_extra"]
+    trenches = (
+        [int(x) for x in sys.argv[sys.argv.index("--trenches") + 1].split(",")]
+        if "--trenches" in sys.argv
+        else reviewed_trenches()
+    )
+    cols = [
+        "agree",
+        "shift",
+        "root",
+        "extra",
+        "skip",
+        "missed",
+        "extra_masks",
+        "side",
+        "divisions",
+        "div_found",
+        "div_extra",
+    ]
     tot = {r: Counter() for r in RUNS}
     for tid in trenches:
-        cur = G(f"{S}/trench_{tid:04d}/curation/{CURRUN}.geff", f"{S}/trench_{tid:04d}/labels/curation.{CURRUN}/0")
+        cur = G(
+            f"{S}/trench_{tid:04d}/curation/{CURRUN}.geff",
+            f"{S}/trench_{tid:04d}/labels/curation.{CURRUN}/0",
+        )
         centre = centre_of(tid)
         for r in RUNS:
             grp, _, name = r.rpartition(":")
             grp = grp or STORE
-            run = G(f"{grp}/trench_{tid:04d}/tracks/{name}.geff", f"{grp}/trench_{tid:04d}/labels/tracks.{name}/0")
+            run = G(
+                f"{grp}/trench_{tid:04d}/tracks/{name}.geff",
+                f"{grp}/trench_{tid:04d}/labels/tracks.{name}/0",
+            )
             out, ev = score(run, cur, centre)
             tot[r].update(out)
-            print(f"trench {tid} {r.rpartition(':')[2]:40s} " + " ".join(f"{c}={out[c]}" for c in cols), flush=True)
+            print(
+                f"trench {tid} {r.rpartition(':')[2]:40s} "
+                + " ".join(f"{c}={out[c]}" for c in cols),
+                flush=True,
+            )
             if VERBOSE:
                 for t, kind, pc, pr, b in sorted(ev, key=lambda e: e[0]):
-                    fb = lambda k, g: f"t{k[0]} {g.box[k][0]}-{g.box[k][1]}" if k is not None and k in g.box else "-"
-                    print(f"    t{t:3d} {kind:16s} cur pred {fb(pc, cur)} | run pred {fb(pr, cur)} | at {fb(b, cur) if b in cur.box else fb(b, run)}")
+                    fb = lambda k, g: (
+                        f"t{k[0]} {g.box[k][0]}-{g.box[k][1]}"
+                        if k is not None and k in g.box
+                        else "-"
+                    )
+                    print(
+                        f"    t{t:3d} {kind:16s} cur pred {fb(pc, cur)} | run pred {fb(pr, cur)} | at {fb(b, cur) if b in cur.box else fb(b, run)}"
+                    )
     print()
     for r in RUNS:
         t = tot[r]
         bad = t["shift"] + t["root"] + t["extra"] + t["skip"]
-        print(f"{r.rpartition(':')[2]:40s} link errors {bad:4d} (shift {t['shift']}, root {t['root']}, extra {t['extra']}, skip {t['skip']}) "
-              f"of {bad + t['agree']}; masks missed {t['missed']}, extra {t['extra_masks']}, side {t['side']}; "
-              f"divisions found {t['div_found']}/{t['divisions']}, extra {t['div_extra']}")
+        print(
+            f"{r.rpartition(':')[2]:40s} link errors {bad:4d} (shift {t['shift']}, root {t['root']}, extra {t['extra']}, skip {t['skip']}) "
+            f"of {bad + t['agree']}; masks missed {t['missed']}, extra {t['extra_masks']}, side {t['side']}; "
+            f"divisions found {t['div_found']}/{t['divisions']}, extra {t['div_extra']}"
+        )

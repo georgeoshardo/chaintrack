@@ -1,0 +1,42 @@
+# Lint and format with ruff (`ruff check`, `ruff format`; run by the pre-commit hooks).
+# The rule set is nd2's (github.com/tlambert03/nd2), as in PyMMM. The rules under
+# "not yet" are switched off until the code is brought up to them.
+line-length = 88
+target-version = "py311"
+
+[format]
+exclude = ["*.md"]
+
+[lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes: unused names, undefined names
+    "D", "D417", # docstrings (numpy convention), every parameter documented
+    "I",        # import order
+    "UP",       # syntax for the oldest supported Python
+    "S",        # bandit: security
+    "C4",       # comprehensions
+    "B",        # bugbear: likely bugs
+    "A001",     # shadowing a builtin
+    "RUF",      # ruff's own rules
+    "SIM105",   # contextlib.suppress
+    "TID",      # tidy imports
+    "TC",       # imports needed only for type hints
+]
+ignore = [
+    "D401",     # first line in the imperative mood (as nd2)
+    "D100",     # module docstrings (as nd2)
+    # not yet:
+    "E501",     # lines longer than 88 characters; the formatter wraps code, not text
+    "D101", "D102", "D103", "D105", "D107",  # a docstring on every public class and function
+    "D205",     # a blank line after a docstring's first line
+    "RUF001", "RUF002", "RUF003",    # µ, × and en dashes in strings and comments
+    "B905",     # zip() without strict=: each call needs deciding
+    "E741",     # single-letter names such as l, kept where they follow the maths
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["D", "S"]
+
+[lint.pydocstyle]
+convention = "numpy"

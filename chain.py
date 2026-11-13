@@ -85,6 +85,7 @@ made with another recipe file:
     python chain.py fit 0-7 $S --recipe wide.toml --fit wide
     python chain.py run 0-9 $S --fit wide --out chain_wide
 """
+
 import json
 import os
 import subprocess
@@ -110,8 +111,10 @@ def option(flag):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
 
 
-USAGE = ("chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--workers N]\n"
-         "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]")
+USAGE = (
+    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--workers N]\n"
+    "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]"
+)
 # what to do: fit, run or follow
 COMMAND = sys.argv[1] if len(sys.argv) > 1 else ""
 if COMMAND not in ("fit", "run", "follow"):
@@ -124,12 +127,16 @@ SEG = option("--seg")
 # the recipe in the store's fit record, and `run` and `follow` take it from there, so a recipe file
 # edited later for another experiment cannot change this experiment's tracks
 RECIPE_FILE = option("--recipe")
-for _flag, _value in (("--store", STORE), ("--seg", SEG)) + ((("--recipe", RECIPE_FILE),) if COMMAND == "fit" else ()):
+for _flag, _value in (("--store", STORE), ("--seg", SEG)) + (
+    (("--recipe", RECIPE_FILE),) if COMMAND == "fit" else ()
+):
     if _value is None:
         sys.exit(f"chain.py: give {_flag}\n{USAGE}")
 if COMMAND != "fit" and RECIPE_FILE is not None:
-    sys.exit(f"chain.py: {COMMAND} takes no --recipe: it uses the recipe frozen in the store's fit. For another "
-             "recipe, fit again under a new name (fit ... --recipe <file> --fit NAME) and track with --fit NAME")
+    sys.exit(
+        f"chain.py: {COMMAND} takes no --recipe: it uses the recipe frozen in the store's fit. For another "
+        "recipe, fit again under a new name (fit ... --recipe <file> --fit NAME) and track with --fit NAME"
+    )
 STORE = Path(STORE)
 # the fit to use, or to make: the store's record attrs.pymmm.fits[<fit>] (--fit NAME, default the segmentation's name)
 FIT = option("--fit") or SEG
@@ -189,11 +196,14 @@ RECIPE_KEYS = {
 }
 # The fitted values, as a store's fit record and the recipe's [fit_start] hold them
 FIT_KEYS = {
-    "growth_per_min": ("growth", "log per frame"),   # log length per frame
-    "sigma_end_um": ("sigma_end", "px"),             # noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
-    "div_um": ("div_mu", "px"),                      # length at division
+    "growth_per_min": ("growth", "log per frame"),  # log length per frame
+    "sigma_end_um": (
+        "sigma_end",
+        "px",
+    ),  # noise of each end of a mask (so a mask's length is noisy by about sqrt(2) of this)
+    "div_um": ("div_mu", "px"),  # length at division
     "div_sd_um": ("div_sd", "px"),
-    "jump_scale_um": ("jump_scale_px", "px"),        # typical size of a jump
+    "jump_scale_um": ("jump_scale_px", "px"),  # typical size of a jump
 }
 
 
@@ -202,13 +212,21 @@ def check_recipe(constants, start, where):
     number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
     or None for a recipe that carries none (one frozen in a store)."""
     number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
-    right = {"flag": lambda v: isinstance(v, bool), "count": lambda v: isinstance(v, int) and not isinstance(v, bool)}
+    right = {
+        "flag": lambda v: isinstance(v, bool),
+        "count": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    }
     problems = []
-    for prefix, table, keys in (("", constants, RECIPE_KEYS),) + ((("fit_start.", start, FIT_KEYS),) if start is not None else ()):
+    for prefix, table, keys in (("", constants, RECIPE_KEYS),) + (
+        (("fit_start.", start, FIT_KEYS),) if start is not None else ()
+    ):
         problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
         problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
-        problems += [f"{prefix}{k} = {v!r}: not a {'number' if keys[k][1] not in right else keys[k][1]}"
-                     for k, v in table.items() if k in keys and not right.get(keys[k][1], number)(v)]
+        problems += [
+            f"{prefix}{k} = {v!r}: not a {'number' if keys[k][1] not in right else keys[k][1]}"
+            for k, v in table.items()
+            if k in keys and not right.get(keys[k][1], number)(v)
+        ]
     if problems:
         sys.exit(f"chain.py: {where}:\n  " + "\n  ".join(problems))
 
@@ -229,7 +247,7 @@ def to_pixels(value, how):
     if how == "whole px":
         return int(round(value / PX))
     if how == "whole px2":
-        return int(round(value / PX ** 2))
+        return int(round(value / PX**2))
     if how == "frames":
         return int(round(value / DT))
     if how == "px per frame":
@@ -243,24 +261,34 @@ def to_pixels(value, how):
 
 def fitted():
     """The fitted parameters as a fit record holds them: µm and minutes."""
-    return {k: float(P[p] / DT if how == "log per frame" else P[p] * PX) for k, (p, how) in FIT_KEYS.items()}
+    return {
+        k: float(P[p] / DT if how == "log per frame" else P[p] * PX)
+        for k, (p, how) in FIT_KEYS.items()
+    }
 
 
 @lru_cache(maxsize=1)
 def code_version():
     """chaintrack's commit, and whether tracked files had uncommitted changes (None outside git)."""
+
     def git(*args):
         try:
-            return subprocess.run(["git", "-C", str(HERE), *args], capture_output=True, text=True,
-                                  timeout=10, check=True).stdout.strip()
+            return subprocess.run(
+                ["git", "-C", str(HERE), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             return None
+
     commit = git("rev-parse", "HEAD")
     status = git("status", "--porcelain", "--untracked-files=no") if commit else None
     return {"commit": commit, "dirty": None if status is None else bool(status)}
 
 
-PX, DT = calibration(open_experiment(STORE))   # µm per pixel, minutes per frame
+PX, DT = calibration(open_experiment(STORE))  # µm per pixel, minutes per frame
 # the store's record of the fit: None until `fit` has run on this store
 FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
 if COMMAND == "fit":
@@ -268,19 +296,34 @@ if COMMAND == "fit":
 else:
     # tracking needs the store's own fit, and uses the recipe frozen in it, never a file
     if FIT_RECORD is None:
-        sys.exit(f"chain.py: {STORE.name} has no fit {FIT!r} (its fits: {sorted(records(open_experiment(STORE), 'fits')) or 'none'}): "
-                 "run `chain.py fit <trenches> ... --recipe <file>` on it first")
+        sys.exit(
+            f"chain.py: {STORE.name} has no fit {FIT!r} (its fits: {sorted(records(open_experiment(STORE), 'fits')) or 'none'}): "
+            "run `chain.py fit <trenches> ... --recipe <file>` on it first"
+        )
     if not FIT_RECORD.get("recipe"):
-        sys.exit(f"chain.py: the fit {FIT!r} of {STORE.name} holds no recipe: fit again, under a new name")
+        sys.exit(
+            f"chain.py: the fit {FIT!r} of {STORE.name} holds no recipe: fit again, under a new name"
+        )
     RECIPE, FIT_START = dict(FIT_RECORD["recipe"]), None
-    check_recipe(RECIPE, None, f"the recipe frozen in the fit {FIT!r} of {STORE.name} is not one this chaintrack can use "
-                 f"(the fit was made by chaintrack {(FIT_RECORD.get('chaintrack') or {}).get('commit')}); fit again, under a new name")
+    check_recipe(
+        RECIPE,
+        None,
+        f"the recipe frozen in the fit {FIT!r} of {STORE.name} is not one this chaintrack can use "
+        f"(the fit was made by chaintrack {(FIT_RECORD.get('chaintrack') or {}).get('commit')}); fit again, under a new name",
+    )
 # The parameters as the tracker uses them, in pixels and frames: the recipe's constants, and the
 # fitted ones from the store's fit (from the recipe's [fit_start] until there is one)
 P = {p: to_pixels(RECIPE[k], how) for k, (p, how) in RECIPE_KEYS.items()}
-P.update({p: to_pixels((FIT_RECORD["values"] if FIT_RECORD else FIT_START)[k], how) for k, (p, how) in FIT_KEYS.items()})
+P.update(
+    {
+        p: to_pixels((FIT_RECORD["values"] if FIT_RECORD else FIT_START)[k], how)
+        for k, (p, how) in FIT_KEYS.items()
+    }
+)
 
-MOVE = dict(match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7, div_one=8)
+MOVE = dict(
+    match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7, div_one=8
+)
 INF = 1e18
 
 
@@ -292,8 +335,37 @@ def mix(r, sigma, p, scale):
 
 
 @numba.njit(cache=True)
-def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen, otop, obot,
-          H, sig_gap, p_jump, p_slide, rng, vis, sptr, sidx, pptr, pj2, end_ok, sd1, maxr, appear, force):
+def align(
+    sm,
+    sd,
+    so,
+    su,
+    nodiv,
+    divc,
+    underc,
+    overc,
+    missc,
+    lysisc,
+    ptop,
+    plen,
+    otop,
+    obot,
+    H,
+    sig_gap,
+    p_jump,
+    p_slide,
+    rng,
+    vis,
+    sptr,
+    sidx,
+    pptr,
+    pj2,
+    end_ok,
+    sd1,
+    maxr,
+    appear,
+    force,
+):
     """Order-preserving alignment of n predicted cells to a frame's masks. The masks form a graph
     (see Frame): state s = 0 before any mask, s = j + 1 once mask j is taken; sidx[sptr[s]:sptr[s + 1]]
     are the masks that can come next, pj2[pptr[j]:pptr[j + 1]] the masks that can follow mask j
@@ -340,46 +412,80 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
                         if f < 0 or f == 0:
                             c = c0 + sp + sm[i, j] + nodiv[i]
                             if c < dp[i + 1, j + 1, i + 1]:
-                                dp[i + 1, j + 1, i + 1] = c; bc[i + 1, j + 1, i + 1] = 0; bi[i + 1, j + 1, i + 1] = i
-                                bs[i + 1, j + 1, i + 1] = s; ba[i + 1, j + 1, i + 1] = a; bm[i + 1, j + 1, i + 1] = j
+                                dp[i + 1, j + 1, i + 1] = c
+                                bc[i + 1, j + 1, i + 1] = 0
+                                bi[i + 1, j + 1, i + 1] = i
+                                bs[i + 1, j + 1, i + 1] = s
+                                ba[i + 1, j + 1, i + 1] = a
+                                bm[i + 1, j + 1, i + 1] = j
                         # divide / cut into two masks
                         for r in range(pptr[j], pptr[j + 1]):
                             j2 = pj2[r]
                             if f < 0 or f == 1:
                                 c = c0 + sp + sd[i, r] + divc[i]
                                 if c < dp[i + 1, j2 + 1, i + 1]:
-                                    dp[i + 1, j2 + 1, i + 1] = c; bc[i + 1, j2 + 1, i + 1] = 1; bi[i + 1, j2 + 1, i + 1] = i
-                                    bs[i + 1, j2 + 1, i + 1] = s; ba[i + 1, j2 + 1, i + 1] = a
-                                    bm[i + 1, j2 + 1, i + 1] = j; bm2[i + 1, j2 + 1, i + 1] = j2
+                                    dp[i + 1, j2 + 1, i + 1] = c
+                                    bc[i + 1, j2 + 1, i + 1] = 1
+                                    bi[i + 1, j2 + 1, i + 1] = i
+                                    bs[i + 1, j2 + 1, i + 1] = s
+                                    ba[i + 1, j2 + 1, i + 1] = a
+                                    bm[i + 1, j2 + 1, i + 1] = j
+                                    bm2[i + 1, j2 + 1, i + 1] = j2
                             if f < 0 or f == 2:
                                 c = c0 + sp + so[i, r] + overc[i] + nodiv[i]
                                 if c < dp[i + 1, j2 + 1, i + 1]:
-                                    dp[i + 1, j2 + 1, i + 1] = c; bc[i + 1, j2 + 1, i + 1] = 2; bi[i + 1, j2 + 1, i + 1] = i
-                                    bs[i + 1, j2 + 1, i + 1] = s; ba[i + 1, j2 + 1, i + 1] = a
-                                    bm[i + 1, j2 + 1, i + 1] = j; bm2[i + 1, j2 + 1, i + 1] = j2
+                                    dp[i + 1, j2 + 1, i + 1] = c
+                                    bc[i + 1, j2 + 1, i + 1] = 2
+                                    bi[i + 1, j2 + 1, i + 1] = i
+                                    bs[i + 1, j2 + 1, i + 1] = s
+                                    ba[i + 1, j2 + 1, i + 1] = a
+                                    bm[i + 1, j2 + 1, i + 1] = j
+                                    bm2[i + 1, j2 + 1, i + 1] = j2
                         # divide, the lower daughter unseen past the bottom
                         if (f < 0 or f == 1) and sd1[i, j] < INF:
                             c = c0 + sp + sd1[i, j] + divc[i]
                             if c < dp[i + 1, j + 1, i + 1]:
-                                dp[i + 1, j + 1, i + 1] = c; bc[i + 1, j + 1, i + 1] = 8; bi[i + 1, j + 1, i + 1] = i
-                                bs[i + 1, j + 1, i + 1] = s; ba[i + 1, j + 1, i + 1] = a; bm[i + 1, j + 1, i + 1] = j
+                                dp[i + 1, j + 1, i + 1] = c
+                                bc[i + 1, j + 1, i + 1] = 8
+                                bi[i + 1, j + 1, i + 1] = i
+                                bs[i + 1, j + 1, i + 1] = s
+                                ba[i + 1, j + 1, i + 1] = a
+                                bm[i + 1, j + 1, i + 1] = j
                         # two cells in one mask
-                        if i + 1 < n and (f < 0 or f == 3) and (force[i + 1] < 0 or force[i + 1] == 3):
+                        if (
+                            i + 1 < n
+                            and (f < 0 or f == 3)
+                            and (force[i + 1] < 0 or force[i + 1] == 3)
+                        ):
                             c = c0 + sp + su[i, j] + underc[i] + nodiv[i] + nodiv[i + 1]
                             if c < dp[i + 2, j + 1, i + 2]:
-                                dp[i + 2, j + 1, i + 2] = c; bc[i + 2, j + 1, i + 2] = 3; bi[i + 2, j + 1, i + 2] = i
-                                bs[i + 2, j + 1, i + 2] = s; ba[i + 2, j + 1, i + 2] = a; bm[i + 2, j + 1, i + 2] = j
+                                dp[i + 2, j + 1, i + 2] = c
+                                bc[i + 2, j + 1, i + 2] = 3
+                                bi[i + 2, j + 1, i + 2] = i
+                                bs[i + 2, j + 1, i + 2] = s
+                                ba[i + 2, j + 1, i + 2] = a
+                                bm[i + 2, j + 1, i + 2] = j
                     # no mask for cell i
                     if not gone:
                         if f < 0 or f == 4:
                             c = c0 + missc[i] + nodiv[i]
                             if c < dp[i + 1, s, a]:
-                                dp[i + 1, s, a] = c; bc[i + 1, s, a] = 4; bi[i + 1, s, a] = i; bs[i + 1, s, a] = s; ba[i + 1, s, a] = a
-                    near_bottom = ptop[i] + 2 * plen[i] >= H   # its own prediction, not one pushed by a jump above
+                                dp[i + 1, s, a] = c
+                                bc[i + 1, s, a] = 4
+                                bi[i + 1, s, a] = i
+                                bs[i + 1, s, a] = s
+                                ba[i + 1, s, a] = a
+                    near_bottom = (
+                        ptop[i] + 2 * plen[i] >= H
+                    )  # its own prediction, not one pushed by a jump above
                     if (not gone or not near_bottom) and (f < 0 or f == 5):
                         c = c0 + lysisc
                         if c < dp[i + 1, s, a]:
-                            dp[i + 1, s, a] = c; bc[i + 1, s, a] = 5; bi[i + 1, s, a] = i; bs[i + 1, s, a] = s; ba[i + 1, s, a] = a
+                            dp[i + 1, s, a] = c
+                            bc[i + 1, s, a] = 5
+                            bi[i + 1, s, a] = i
+                            bs[i + 1, s, a] = s
+                            ba[i + 1, s, a] = a
                     if (f < 0 or f == 6) and near_bottom:
                         if gone:
                             ec = 0.0
@@ -390,12 +496,20 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
                         if ec < INF:
                             c = c0 + ec
                             if c < dp[i + 1, s, a]:
-                                dp[i + 1, s, a] = c; bc[i + 1, s, a] = 6; bi[i + 1, s, a] = i; bs[i + 1, s, a] = s; ba[i + 1, s, a] = a
+                                dp[i + 1, s, a] = c
+                                bc[i + 1, s, a] = 6
+                                bi[i + 1, s, a] = i
+                                bs[i + 1, s, a] = s
+                                ba[i + 1, s, a] = a
                 for q in range(sptr[s], sptr[s + 1]):  # a mask no cell explains
                     j = sidx[q]
                     c = c0 + appear
                     if c < dp[i, j + 1, a]:
-                        dp[i, j + 1, a] = c; bc[i, j + 1, a] = 7; bi[i, j + 1, a] = i; bs[i, j + 1, a] = s; ba[i, j + 1, a] = a
+                        dp[i, j + 1, a] = c
+                        bc[i, j + 1, a] = 7
+                        bi[i, j + 1, a] = i
+                        bs[i, j + 1, a] = s
+                        ba[i, j + 1, a] = a
                         bm[i, j + 1, a] = j
     best, best_s, best_a = INF, 0, 0
     for s in range(S):
@@ -408,19 +522,37 @@ def align(sm, sd, so, su, nodiv, divc, underc, overc, missc, lysisc, ptop, plen,
     i, s, a = n, best_s, best_a
     while (i > 0 or s > 0) and bc[i, s, a] >= 0:
         code = bc[i, s, a]
-        rows[k, 0] = code; rows[k, 1] = -1 if code == 7 else bi[i, s, a]
-        rows[k, 2] = bm[i, s, a]; rows[k, 3] = bm2[i, s, a]
+        rows[k, 0] = code
+        rows[k, 1] = -1 if code == 7 else bi[i, s, a]
+        rows[k, 2] = bm[i, s, a]
+        rows[k, 3] = bm2[i, s, a]
         k += 1
         i, s, a = bi[i, s, a], bs[i, s, a], ba[i, s, a]
     return best, rows[:k][::-1]
 
 
 class Hyp:
-    __slots__ = ("ids", "top", "length", "parent", "born", "unseen", "trunc", "score", "rec")
+    __slots__ = (
+        "ids",
+        "top",
+        "length",
+        "parent",
+        "born",
+        "unseen",
+        "trunc",
+        "score",
+        "rec",
+    )
 
     def __init__(self, ids, top, length, parent, born, unseen, trunc, score, rec):
         self.ids, self.top, self.length, self.parent = ids, top, length, parent
-        self.born, self.unseen, self.trunc, self.score, self.rec = born, unseen, trunc, score, rec
+        self.born, self.unseen, self.trunc, self.score, self.rec = (
+            born,
+            unseen,
+            trunc,
+            score,
+            rec,
+        )
 
 
 class Counter:
@@ -441,16 +573,28 @@ def frame_masks(frame, H):
             continue
         pix = np.flatnonzero(flat == l)
         rows, cols = pix // W, pix % W
-        out.append((int(rows.min()), int(rows.max()), int(l), bool(rows.max() >= H - P["cut_off_px"]), float(rows.mean()),
-                    len(pix), float(cols.mean())))
+        out.append(
+            (
+                int(rows.min()),
+                int(rows.max()),
+                int(l),
+                bool(rows.max() >= H - P["cut_off_px"]),
+                float(rows.mean()),
+                len(pix),
+                float(cols.mean()),
+            )
+        )
     return out
 
 
 def side_cost(o, last):
     """How unlike the off-centre cell `last` the mask `o` is: it can move along the trench a fair
     way, but keeps its size and stays near its own sideways position."""
-    return (((o[4] - last[4]) / P["side_sigma_y"]) ** 2 + (np.log(o[5] / last[5]) / P["side_sigma_area"]) ** 2
-            + ((o[6] - last[6]) / P["side_sigma_x"]) ** 2)
+    return (
+        ((o[4] - last[4]) / P["side_sigma_y"]) ** 2
+        + (np.log(o[5] / last[5]) / P["side_sigma_area"]) ** 2
+        + ((o[6] - last[6]) / P["side_sigma_x"]) ** 2
+    )
 
 
 def may_follow(o, frame, previous, centre):
@@ -461,12 +605,20 @@ def may_follow(o, frame, previous, centre):
         return True
     a = np.flatnonzero(frame.ravel() == o[2])
     b = np.flatnonzero(previous[0].ravel() == previous[1])
-    return np.intersect1d(a, b, assume_unique=True).size >= P["side_min_overlap"] * min(len(a), len(b))
+    return np.intersect1d(a, b, assume_unique=True).size >= P["side_min_overlap"] * min(
+        len(a), len(b)
+    )
 
 
 def mask_stats(pix, W):
     rows, cols = pix // W, pix % W
-    return int(rows.min()), int(rows.max()), float(rows.mean()), len(pix), float(cols.mean())
+    return (
+        int(rows.min()),
+        int(rows.max()),
+        float(rows.mean()),
+        len(pix),
+        float(cols.mean()),
+    )
 
 
 def alt_side_piece(frame, alt_frames, last, centre, claimed):
@@ -475,7 +627,10 @@ def alt_side_piece(frame, alt_frames, last, centre, claimed):
     base merged the cell into a chain cell). (host label, flat pixels of the piece) or None."""
     W = frame.shape[1]
     flat = frame.ravel()
-    lo, hi = max(0, int(last[0]) - P["side_window_px"]), int(last[1]) + P["side_window_px"] + 1
+    lo, hi = (
+        max(0, int(last[0]) - P["side_window_px"]),
+        int(last[1]) + P["side_window_px"] + 1,
+    )
     best = None
     for alt in alt_frames:
         window = alt[lo:hi]
@@ -497,8 +652,11 @@ def alt_side_piece(frame, alt_frames, last, centre, claimed):
                 continue
             host_pix = np.flatnonzero(flat == host)
             piece = np.intersect1d(pix, host_pix, assume_unique=True)
-            if len(piece) < 0.5 * len(pix) or len(host_pix) - len(piece) < P["side_min_piece_px"] \
-                    or len(piece) < P["side_min_piece_px"]:
+            if (
+                len(piece) < 0.5 * len(pix)
+                or len(host_pix) - len(piece) < P["side_min_piece_px"]
+                or len(piece) < P["side_min_piece_px"]
+            ):
                 continue
             best = (c, host, piece)
     return None if best is None else best[1:]
@@ -510,7 +668,7 @@ def alt_centre_cut(frame, alt_frames, host, centre):
     alternatives cut it alike (IoU >= 0.8). Flat pixels of the piece, or None."""
     W = frame.shape[1]
     host_pix = np.flatnonzero(frame.ravel() == host)
-    found = []   # (piece, votes)
+    found = []  # (piece, votes)
     for alt in alt_frames:
         inside = alt.ravel()[host_pix]
         centred, off = False, []
@@ -523,7 +681,10 @@ def alt_centre_cut(frame, alt_frames, host, centre):
                 centred = True
             else:
                 off.append(piece)
-        if not (centred and len(off) == 1) or len(host_pix) - len(off[0]) < P["side_min_piece_px"]:
+        if (
+            not (centred and len(off) == 1)
+            or len(host_pix) - len(off[0]) < P["side_min_piece_px"]
+        ):
             continue
         for k, (piece, votes) in enumerate(found):
             inter = np.intersect1d(piece, off[0], assume_unique=True).size
@@ -564,23 +725,39 @@ def split_side(lab, centre, H, alts=()):
                     best = (c, o)
             if best is not None:
                 o = best[1]
-                claimed.add(o[2]); tracks[tid].append((t, o[2])); nxt.append((tid, o, 0))
+                claimed.add(o[2])
+                tracks[tid].append((t, o[2]))
+                nxt.append((tid, o, 0))
             else:
                 waiting.append((tid, last, missed))
         still = []
         for tid, last, missed in waiting:
-            cut = alt_side_piece(frame, alt_t, last, centre, claimed) if alt_t and P["side_alt_piece"] else None
+            cut = (
+                alt_side_piece(frame, alt_t, last, centre, claimed)
+                if alt_t and P["side_alt_piece"]
+                else None
+            )
             if cut is not None:
                 _, piece = cut
                 new = int(frame.max()) + 1
                 frame.ravel()[piece] = new
                 masks = frame_masks(frame, H)
                 o = next(m for m in masks if m[2] == new)
-                claimed.add(new); tracks[tid].append((t, new)); nxt.append((tid, o, 0))
+                claimed.add(new)
+                tracks[tid].append((t, new))
+                nxt.append((tid, o, 0))
             else:
                 still.append((tid, last, missed))
-        for label in [o[2] for o in masks if o[2] not in claimed and abs(o[6] - centre) > P["centre_px"]]:
-            piece = alt_centre_cut(frame, alt_t, label, centre) if alt_t and P["side_alt_cut"] else None
+        for label in [
+            o[2]
+            for o in masks
+            if o[2] not in claimed and abs(o[6] - centre) > P["centre_px"]
+        ]:
+            piece = (
+                alt_centre_cut(frame, alt_t, label, centre)
+                if alt_t and P["side_alt_cut"]
+                else None
+            )
             if piece is not None:
                 label = int(frame.max()) + 1
                 frame.ravel()[piece] = label
@@ -591,16 +768,26 @@ def split_side(lab, centre, H, alts=()):
             if piece is not None:
                 for k, (tid, last, missed) in enumerate(still):
                     c = side_cost(o, last)
-                    if c <= P["side_max_cost"] and may_follow(o, frame, last_mask(tid), centre) and (best is None or c < best[0]):
+                    if (
+                        c <= P["side_max_cost"]
+                        and may_follow(o, frame, last_mask(tid), centre)
+                        and (best is None or c < best[0])
+                    ):
                         best = (c, k)
             if best is not None:
                 tid = still.pop(best[1])[0]
-                tracks[tid].append((t, o[2])); claimed.add(o[2]); nxt.append((tid, o, 0))
+                tracks[tid].append((t, o[2]))
+                claimed.add(o[2])
+                nxt.append((tid, o, 0))
             else:
                 nid += 1
-                tracks[-nid] = [(t, o[2])]; claimed.add(o[2]); nxt.append((-nid, o, 0))
+                tracks[-nid] = [(t, o[2])]
+                claimed.add(o[2])
+                nxt.append((-nid, o, 0))
         for tid, last, missed in still:
-            if missed < P["max_miss"]:  # no mask this frame, like a chain cell: wait for it
+            if (
+                missed < P["max_miss"]
+            ):  # no mask this frame, like a chain cell: wait for it
                 nxt.append((tid, last, missed + 1))
         active = nxt
         obs.append(sorted(o[:6] for o in masks if o[2] not in claimed))
@@ -619,7 +806,7 @@ def label_groups(frame):
     lab, nz = lab[order], nz[order]
     ids, first = np.unique(lab, return_index=True)
     bounds = list(first) + [len(lab)]
-    return [(int(l), nz[bounds[k]:bounds[k + 1]]) for k, l in enumerate(ids)]
+    return [(int(l), nz[bounds[k] : bounds[k + 1]]) for k, l in enumerate(ids)]
 
 
 class Frame:
@@ -642,14 +829,28 @@ class Frame:
     that can come next from each state (0 = before any mask, j + 1 = after mask j); pptr/pj/pj2:
     the pairs of masks that can follow each other (no_div: not as a mother's daughters);
     end_ok: states the frame may end at."""
-    __slots__ = ("masks", "pix", "base", "sptr", "sidx", "pptr", "pj", "pj2", "end_ok", "alt_first", "no_div")
+
+    __slots__ = (
+        "masks",
+        "pix",
+        "base",
+        "sptr",
+        "sidx",
+        "pptr",
+        "pj",
+        "pj2",
+        "end_ok",
+        "alt_first",
+        "no_div",
+    )
 
     def __init__(self, base_obs, base_frame, alt_frames, side_labels, centre, H):
         W = base_frame.shape[1]
         groups = dict(label_groups(base_frame))
         info, pix = [], []
         for o in base_obs:
-            info.append((o[0], o[1], len(info), o[3], o[4], o[5])); pix.append(groups[o[2]])
+            info.append((o[0], o[1], len(info), o[3], o[4], o[5]))
+            pix.append(groups[o[2]])
         nb = len(info)
         idimg = np.zeros(base_frame.size, np.int64)
         for b in range(nb):
@@ -660,12 +861,15 @@ class Frame:
             mine = []
             for _, q in label_groups(fr):
                 cols = q % W
-                if abs(cols.mean() - centre) > P["centre_px"] or (side is not None and side[q].mean() > 0.5):
+                if abs(cols.mean() - centre) > P["centre_px"] or (
+                    side is not None and side[q].mean() > 0.5
+                ):
                     continue
                 same = -1
-                cnt = np.bincount(idimg[q], minlength=nb + 1); cnt[0] = 0
+                cnt = np.bincount(idimg[q], minlength=nb + 1)
+                cnt[0] = 0
                 if sum(cnt[b + 1] >= 0.3 * len(pix[b]) for b in range(nb)) >= 2:
-                    continue   # a merge of base masks: "one cell cut into two masks" covers it
+                    continue  # a merge of base masks: "one cell cut into two masks" covers it
                 b = int(np.argmax(cnt)) - 1
                 if b >= 0 and cnt[b + 1] / (len(q) + len(pix[b]) - cnt[b + 1]) >= 0.8:
                     same = b
@@ -677,9 +881,18 @@ class Frame:
                 if same < 0:
                     rows = q // W
                     same = len(info)
-                    info.append((int(rows.min()), int(rows.max()), same, bool(rows.max() >= H - P["cut_off_px"]),
-                                 float(rows.mean()), len(q)))
-                    pix.append(q); extras.append(same)
+                    info.append(
+                        (
+                            int(rows.min()),
+                            int(rows.max()),
+                            same,
+                            bool(rows.max() >= H - P["cut_off_px"]),
+                            float(rows.mean()),
+                            len(q),
+                        )
+                    )
+                    pix.append(q)
+                    extras.append(same)
                 mine.append(same)
             cuts.append(mine)
         # regions: candidates that overlap by at least 30% of the smaller one
@@ -690,6 +903,7 @@ class Frame:
                 root[x] = root[root[x]]
                 x = root[x]
             return x
+
         cover = {}
         for k, e in enumerate(extras):
             cnt = np.bincount(idimg[pix[e]], minlength=nb + 1)
@@ -737,7 +951,9 @@ class Frame:
         entry = [[] for _ in range(R + 1)]
         for r in range(R - 1, -1, -1):
             tail[r] = empty[r] and tail[r + 1]
-            entry[r] = [om[0] for om in opt_masks[r] if om] + (entry[r + 1] if empty[r] else [])
+            entry[r] = [om[0] for om in opt_masks[r] if om] + (
+                entry[r + 1] if empty[r] else []
+            )
         succ = [entry[0]] + [[] for _ in range(M)]
         end_ok = np.zeros(M + 1, bool)
         end_ok[0] = tail[0]
@@ -764,11 +980,27 @@ class Frame:
         self.pj2 = np.array([b for _, b in pairs], np.int64)
         self.pptr = np.searchsorted(self.pj, np.arange(M + 1)).astype(np.int64)
         # the base mask holding most of each candidate (itself for a base mask)
-        within = [c if c < nb else (int(np.argmax(cover[c][1:])) if nb and cover[c][1:].max() >= 0.5 * len(pix[c]) else -1)
-                  for c in range(len(info))]
+        within = [
+            c
+            if c < nb
+            else (
+                int(np.argmax(cover[c][1:]))
+                if nb and cover[c][1:].max() >= 0.5 * len(pix[c])
+                else -1
+            )
+            for c in range(len(info))
+        ]
         cid = [m[2] for m in masks]
-        self.no_div = np.array([cid[a] >= nb and cid[b] >= nb and within[cid[a]] >= 0
-                                and within[cid[a]] == within[cid[b]] for a, b in pairs], bool)
+        self.no_div = np.array(
+            [
+                cid[a] >= nb
+                and cid[b] >= nb
+                and within[cid[a]] >= 0
+                and within[cid[a]] == within[cid[b]]
+                for a, b in pairs
+            ],
+            bool,
+        )
 
 
 def hazards(length, grown, trunc):
@@ -805,9 +1037,11 @@ def size_costs(h, frame, grown, t, H):
 
     def fit(L, pred, cut, free):
         x = np.log(L[None, :] / pred[:, None])
-        r = L[None, :] - pred[:, None]                           # px: both ends' noise, whatever the length
+        r = L[None, :] - pred[:, None]  # px: both ends' noise, whatever the length
         c = 0.5 * (r / sl) ** 2
-        c = np.where(cut[None, :] & (r < 0), 0.0, c)             # cut off by the crop: only an upper bound
+        c = np.where(
+            cut[None, :] & (r < 0), 0.0, c
+        )  # cut off by the crop: only an upper bound
         ok = (x <= lim) & ((x >= -lim) | cut[None, :])
         if P["trunc_bound"]:
             # a cell cut off at the bottom (free): its length is unknown but no shorter than predicted,
@@ -830,14 +1064,24 @@ def size_costs(h, frame, grown, t, H):
         d1 = np.log(olen[None, pj] / (grown[:, None] / 2))
         d2 = np.log(olen[None, pj2] / (grown[:, None] / 2))
         d2 = np.where(otr[None, pj2] & (d2 < 0), 0.0, d2)
-        sd[:, :npairs] = whole + 0.5 * (d1 / P["sigma_daughter"]) ** 2 + 0.5 * (d2 / P["sigma_daughter"]) ** 2
+        sd[:, :npairs] = (
+            whole
+            + 0.5 * (d1 / P["sigma_daughter"]) ** 2
+            + 0.5 * (d2 / P["sigma_daughter"]) ** 2
+        )
     su = np.full((max(n - 1, 1), m), INF)
     underc = np.zeros(max(n - 1, 1))
     if n >= 2 and m:
-        su[:n - 1] = fit(olen, grown[:-1] + grown[1:], otr, trunc[:-1] | trunc[1:])
-        sisters = np.array([h.parent[i] >= 0 and h.parent[i] == h.parent[i + 1]
-                            and t - h.born[i] <= P["sisters_frames"] for i in range(n - 1)])
-        underc[:n - 1] = -np.log(np.where(sisters, P["p_under_sisters"], P["p_under"]))
+        su[: n - 1] = fit(olen, grown[:-1] + grown[1:], otr, trunc[:-1] | trunc[1:])
+        sisters = np.array(
+            [
+                h.parent[i] >= 0
+                and h.parent[i] == h.parent[i + 1]
+                and t - h.born[i] <= P["sisters_frames"]
+                for i in range(n - 1)
+            ]
+        )
+        underc[: n - 1] = -np.log(np.where(sisters, P["p_under_sisters"], P["p_under"]))
     # a division with only the upper daughter in view: mask j is about half the mother, and the
     # lower daughter (the rest of the mother below it) would be cut off so far that no mask of it is
     # kept: in view by less than the shortest mask kept, or reaching the rows cleared at the bottom
@@ -850,10 +1094,14 @@ def size_costs(h, frame, grown, t, H):
         shortest = (P["div_mu"] - 3 * P["div_sd"]) / 2
         cleared = P["clear_bottom_px"] > 0
         unseen = (H - lower_top < shortest) | (cleared & (lower_bot >= H))
-        ok = unseen & (lower_bot >= H) & ~otr[None, :] & (np.abs(d1) <= np.log(P["max_length_change"]) + 3 * P["sigma_daughter"])
+        ok = (
+            unseen
+            & (lower_bot >= H)
+            & ~otr[None, :]
+            & (np.abs(d1) <= np.log(P["max_length_change"]) + 3 * P["sigma_daughter"])
+        )
         sd1[:, :m] = np.where(ok, 0.5 * (d1 / P["sigma_daughter"]) ** 2, INF)
     return sm, sd, so, su, underc, otop, obot, sd1
-
 
 
 def costs(h, frame, H, t):
@@ -865,20 +1113,59 @@ def costs(h, frame, H, t):
         sd1 = sd1 + altc[None, :]
     su = su + altc[None, :]
     if len(frame.pj):
-        sd = sd.copy(); so = so.copy()
+        sd = sd.copy()
+        so = so.copy()
         pairc = altc[frame.pj] + altc[frame.pj2]
-        sd[:, :len(pairc)] += pairc[None, :]
-        so[:, :len(pairc)] += pairc[None, :]
-        sd[:, :len(pairc)][:, frame.no_div] = INF
-    divc, nodiv = hazards(np.asarray(h.length, float), grown, np.asarray(h.trunc, bool)) if h.ids else (np.zeros(0), np.zeros(0))
-    missc = np.where(np.asarray(h.unseen) < P["max_miss"], -np.log(P["p_miss"]), INF) if h.ids else np.zeros(0)
+        sd[:, : len(pairc)] += pairc[None, :]
+        so[:, : len(pairc)] += pairc[None, :]
+        sd[:, : len(pairc)][:, frame.no_div] = INF
+    divc, nodiv = (
+        hazards(np.asarray(h.length, float), grown, np.asarray(h.trunc, bool))
+        if h.ids
+        else (np.zeros(0), np.zeros(0))
+    )
+    missc = (
+        np.where(np.asarray(h.unseen) < P["max_miss"], -np.log(P["p_miss"]), INF)
+        if h.ids
+        else np.zeros(0)
+    )
     overc = np.full(len(grown), -np.log(P["p_over"]))
     unseen = np.asarray(h.unseen, float) if h.ids else np.zeros(0)
-    maxr = np.where((unseen > 0) & P["no_revival"], 4 * P["sigma_gap"] + P["revival_px"] * unseen, INF)
-    args = (sm, sd, so, su, nodiv, divc, underc, overc, missc, -np.log(P["p_lysis"]),
-            ptop, grown, otop, obot, float(H), P["sigma_gap"], P["p_jump"], P["p_slide"], P["jump_scale_px"],
-            float(P["exit_visible_px"]), frame.sptr, frame.sidx, frame.pptr, frame.pj2, frame.end_ok, sd1, maxr,
-            float(P["appear_cost"]))
+    maxr = np.where(
+        (unseen > 0) & P["no_revival"],
+        4 * P["sigma_gap"] + P["revival_px"] * unseen,
+        INF,
+    )
+    args = (
+        sm,
+        sd,
+        so,
+        su,
+        nodiv,
+        divc,
+        underc,
+        overc,
+        missc,
+        -np.log(P["p_lysis"]),
+        ptop,
+        grown,
+        otop,
+        obot,
+        float(H),
+        P["sigma_gap"],
+        P["p_jump"],
+        P["p_slide"],
+        P["jump_scale_px"],
+        float(P["exit_visible_px"]),
+        frame.sptr,
+        frame.sidx,
+        frame.pptr,
+        frame.pj2,
+        frame.end_ok,
+        sd1,
+        maxr,
+        float(P["appear_cost"]),
+    )
     return args, ptop, grown
 
 
@@ -886,13 +1173,29 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     obs = frame.masks
     ids, top, length, parent, born, unseen, trunc = [], [], [], [], [], [], []
     entries, divisions, lone = [], [], []
-    events = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+    events = dict(
+        div=0,
+        div_one=0,
+        over=0,
+        under=0,
+        miss=0,
+        lysis=0,
+        exit=0,
+        appear=0,
+        jump=0,
+        slide=0,
+    )
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     ref_bot, ref_cell = None, None  # mask bottom and cell of the last cell with a mask
 
     def keep(cid, tp, L, par, b, u, tr):
-        ids.append(cid); top.append(float(tp)); length.append(max(float(L), 1.0)); parent.append(par)
-        born.append(b); unseen.append(u); trunc.append(tr)
+        ids.append(cid)
+        top.append(float(tp))
+        length.append(max(float(L), 1.0))
+        parent.append(par)
+        born.append(b)
+        unseen.append(u)
+        trunc.append(tr)
 
     def where(i):
         if ref_cell is None:
@@ -914,17 +1217,34 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             o = obs[j]
             L = o[1] - o[0] + 1
             spacing(i, o[0])
-            keep(h.ids[i], o[0], max(L, grown[i]) if o[3] else L, h.parent[i], h.born[i], 0, o[3])
+            keep(
+                h.ids[i],
+                o[0],
+                max(L, grown[i]) if o[3] else L,
+                h.parent[i],
+                h.born[i],
+                0,
+                o[3],
+            )
             entries.append((h.ids[i], "mask", (o[2],)))
             if not o[3] and not h.trunc[i]:
-                lens.append(L - grown[i]); growth.append(np.log(L / h.length[i]))
+                lens.append(L - grown[i])
+                growth.append(np.log(L / h.length[i]))
             ref_bot, ref_cell = o[1], i
         elif code == 1:
             spacing(i, obs[j][0])
             for oo in (obs[j], obs[j2]):
                 c = new_id()
                 L = oo[1] - oo[0] + 1
-                keep(c, oo[0], max(L, grown[i] / 2) if oo[3] else L, h.ids[i], t, 0, oo[3])
+                keep(
+                    c,
+                    oo[0],
+                    max(L, grown[i] / 2) if oo[3] else L,
+                    h.ids[i],
+                    t,
+                    0,
+                    oo[3],
+                )
                 entries.append((c, "mask", (oo[2],)))
                 divisions.append((h.ids[i], c))
             events["div"] += 1
@@ -935,7 +1255,15 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             a, b = obs[j], obs[j2]
             spacing(i, a[0])
             L = b[1] - a[0] + 1
-            keep(h.ids[i], a[0], max(L, grown[i]) if b[3] else L, h.parent[i], h.born[i], 0, b[3])
+            keep(
+                h.ids[i],
+                a[0],
+                max(L, grown[i]) if b[3] else L,
+                h.parent[i],
+                h.born[i],
+                0,
+                b[3],
+            )
             entries.append((h.ids[i], "union", (a[2], b[2])))
             events["over"] += 1
             ref_bot, ref_cell = b[1], i
@@ -947,12 +1275,28 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             keep(h.ids[i], o[0], cut - o[0], h.parent[i], h.born[i], 0, False)
             entries.append((h.ids[i], "upper", (o[2], cut)))
             L2 = o[1] - cut + 1
-            keep(h.ids[i + 1], cut, max(L2, grown[i + 1]) if o[3] else L2, h.parent[i + 1], h.born[i + 1], 0, o[3])
+            keep(
+                h.ids[i + 1],
+                cut,
+                max(L2, grown[i + 1]) if o[3] else L2,
+                h.parent[i + 1],
+                h.born[i + 1],
+                0,
+                o[3],
+            )
             entries.append((h.ids[i + 1], "lower", (o[2], cut)))
             events["under"] += 1
             ref_bot, ref_cell = o[1], i + 1
         elif code == 4:
-            keep(h.ids[i], where(i), grown[i], h.parent[i], h.born[i], h.unseen[i] + 1, h.trunc[i])
+            keep(
+                h.ids[i],
+                where(i),
+                grown[i],
+                h.parent[i],
+                h.born[i],
+                h.unseen[i] + 1,
+                h.trunc[i],
+            )
             events["miss"] += 1
         elif code == 5:
             events["lysis"] += 1
@@ -978,9 +1322,24 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     # keep the chain in order (an appeared mask is placed by its position)
     order = np.argsort(top, kind="stable")
     cols = [ids, top, length, parent, born, unseen, trunc]
-    ids, top, length, parent, born, unseen, trunc = ([c[k] for k in order] for c in cols)
-    rec = (h.rec, t, entries, divisions, events, lens, gaps, divlen, growth + [("jump", j) for j in jumps],
-           (np.array(rows), ptop, grown, [o[:2] for o in obs], list(h.length), args, cost) if P.get("debug") else None, lone)
+    ids, top, length, parent, born, unseen, trunc = (
+        [c[k] for k in order] for c in cols
+    )
+    rec = (
+        h.rec,
+        t,
+        entries,
+        divisions,
+        events,
+        lens,
+        gaps,
+        divlen,
+        growth + [("jump", j) for j in jumps],
+        (np.array(rows), ptop, grown, [o[:2] for o in obs], list(h.length), args, cost)
+        if P.get("debug")
+        else None,
+        lone,
+    )
     return Hyp(ids, top, length, parent, born, unseen, trunc, h.score + cost, rec)
 
 
@@ -1081,16 +1440,42 @@ def track(labs):
     allc = np.nonzero(lab)[2]
     centre = float(np.median(allc)) if len(allc) else W / 2
     obs, side, side_labels = split_side(lab, centre, H, labs[1:])
-    frames = [Frame(obs[t], lab[t], [l[t] for l in labs[1:]], side_labels[t], centre, H) for t in range(T)]
+    frames = [
+        Frame(obs[t], lab[t], [l[t] for l in labs[1:]], side_labels[t], centre, H)
+        for t in range(T)
+    ]
     new_id = Counter()
     first = next((t for t in range(T) if obs[t]), None)
     if first is None:
         return [], side, frames
     o0 = [frames[first].masks[j] for j in frames[first].base]
     ids = [new_id() for _ in o0]
-    rec = (None, first, [(c, "mask", (o[2],)) for c, o in zip(ids, o0)], [], {}, [], [], [], [], None, [])
-    hyps = [Hyp(ids, [float(o[0]) for o in o0], [float(o[1] - o[0] + 1) for o in o0], [-1] * len(o0),
-                [first] * len(o0), [0] * len(o0), [o[3] for o in o0], 0.0, rec)]
+    rec = (
+        None,
+        first,
+        [(c, "mask", (o[2],)) for c, o in zip(ids, o0)],
+        [],
+        {},
+        [],
+        [],
+        [],
+        [],
+        None,
+        [],
+    )
+    hyps = [
+        Hyp(
+            ids,
+            [float(o[0]) for o in o0],
+            [float(o[1] - o[0] + 1) for o in o0],
+            [-1] * len(o0),
+            [first] * len(o0),
+            [0] * len(o0),
+            [o[3] for o in o0],
+            0.0,
+            rec,
+        )
+    ]
     for t in range(first + 1, T):
         hyps = step(hyps, frames[t], H, t, new_id)
     best = min(hyps, key=lambda x: x.score)
@@ -1102,20 +1487,35 @@ def track(labs):
 
 
 def stats_of(recs):
-    tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+    tot = dict(
+        div=0,
+        div_one=0,
+        over=0,
+        under=0,
+        miss=0,
+        lysis=0,
+        exit=0,
+        appear=0,
+        jump=0,
+        slide=0,
+    )
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     for r in recs[1:]:
         for k, v in r[4].items():
             tot[k] += v
-        lens += r[5]; gaps += r[6]; divlen += r[7]
+        lens += r[5]
+        gaps += r[6]
+        divlen += r[7]
         growth += [g for g in r[8] if not isinstance(g, tuple)]
         jumps += [g[1] for g in r[8] if isinstance(g, tuple)]
     return tot, lens, gaps, divlen, growth, jumps
 
 
-_POOL = None      # the worker processes, started at the first use
-_WORKERS = None   # how many trenches `run` and `follow` track at once, set at the first batch
-_ROOT = None      # this process's handle on the store, for writing a trench's tracks
+_POOL = None  # the worker processes, started at the first use
+_WORKERS = (
+    None  # how many trenches `run` and `follow` track at once, set at the first batch
+)
+_ROOT = None  # this process's handle on the store, for writing a trench's tracks
 
 
 def workers_for(tasks, bytes_each):
@@ -1125,9 +1525,13 @@ def workers_for(tasks, bytes_each):
         return max(1, min(int(WORKERS), tasks))
     try:
         with open("/proc/meminfo") as f:
-            free = next(int(line.split()[1]) * 1024 for line in f if line.startswith("MemAvailable"))
+            free = next(
+                int(line.split()[1]) * 1024
+                for line in f
+                if line.startswith("MemAvailable")
+            )
     except (OSError, StopIteration):
-        return 1    # free memory unknown: one at a time unless --workers says otherwise
+        return 1  # free memory unknown: one at a time unless --workers says otherwise
     return max(1, min(os.cpu_count() or 1, int(0.8 * free / bytes_each), tasks))
 
 
@@ -1146,7 +1550,10 @@ def in_parallel(function, tasks, workers):
     if _POOL is None:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        _POOL = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+
+        _POOL = ProcessPoolExecutor(
+            workers, mp_context=multiprocessing.get_context("spawn")
+        )
     return _POOL.map(function, tasks)
 
 
@@ -1164,51 +1571,103 @@ def fit(trenches, rounds=3):
 
     root = open_experiment(STORE)
     # runs made before fits were recorded used the fit named after their segmentation
-    used_by = [name for name, rec in records(root, "tracks").items()
-               if (rec.get("fit") or {}).get("name", rec.get("segmentation")) == FIT]
+    used_by = [
+        name
+        for name, rec in records(root, "tracks").items()
+        if (rec.get("fit") or {}).get("name", rec.get("segmentation")) == FIT
+    ]
     if FIT_RECORD is not None and used_by:
-        sys.exit(f"chain.py: the fit {FIT!r} of {STORE.name} was used by the run(s) {', '.join(used_by)}, so it stays as it is: "
-                 "give this fit another name with --fit")
-    started = f"the store's fit of {FIT_RECORD['created']}" if FIT_RECORD else "the recipe's fit_start"
-    print(f"fit {FIT} of {STORE.name} ({PX:.4f} µm per pixel, {DT:.4f} min per frame), starting from {started}", flush=True)
+        sys.exit(
+            f"chain.py: the fit {FIT!r} of {STORE.name} was used by the run(s) {', '.join(used_by)}, so it stays as it is: "
+            "give this fit another name with --fit"
+        )
+    started = (
+        f"the store's fit of {FIT_RECORD['created']}"
+        if FIT_RECORD
+        else "the recipe's fit_start"
+    )
+    print(
+        f"fit {FIT} of {STORE.name} ({PX:.4f} µm per pixel, {DT:.4f} min per frame), starting from {started}",
+        flush=True,
+    )
     used, labs = [], []
     for t in trenches:
         lab = np.asarray(segmentation(root, t, SEG)[1][0][...])
         if lab.any():
-            used.append(int(t)); labs.append(clean(lab))
+            used.append(int(t))
+            labs.append(clean(lab))
     mad = lambda v: 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
     # allow each trench 4 times its masks' size (a guess: the fit reads one hypothesis, and its
     # memory was not measured)
     workers = workers_for(len(labs), 4 * max((lab.nbytes for lab in labs), default=1))
     for r in range(rounds):
-        tot = dict(div=0, div_one=0, over=0, under=0, miss=0, lysis=0, exit=0, appear=0, jump=0, slide=0)
+        tot = dict(
+            div=0,
+            div_one=0,
+            over=0,
+            under=0,
+            miss=0,
+            lysis=0,
+            exit=0,
+            appear=0,
+            jump=0,
+            slide=0,
+        )
         lens, gaps, divlen, growth, jumps = [], [], [], [], []
         start = time.perf_counter()
         # the trenches' statistics are gathered in the trenches' order, however many are tracked at once
-        for a, l, g, d, gr, ju in in_parallel(fit_track, [(lab, dict(P)) for lab in labs], workers):
+        for a, l, g, d, gr, ju in in_parallel(
+            fit_track, [(lab, dict(P)) for lab in labs], workers
+        ):
             for k in tot:
                 tot[k] += a[k]
-            lens += l; gaps += g; divlen += d; growth += gr; jumps += ju
+            lens += l
+            gaps += g
+            divlen += d
+            growth += gr
+            jumps += ju
         if len(growth) > 100:
             P["growth"] = float(np.median(growth))
         if len(lens) > 100:
             P["sigma_end"] = max(mad(lens) / np.sqrt(2.0), 0.5)
         if len(divlen) > 20:
-            P["div_mu"] = float(np.median(divlen)); P["div_sd"] = max(mad(divlen), 0.05 * P["div_mu"])
+            P["div_mu"] = float(np.median(divlen))
+            P["div_sd"] = max(mad(divlen), 0.05 * P["div_mu"])
         if len(jumps) > 20:
             P["jump_scale_px"] = float(np.mean(jumps))
-        print(f"round {r + 1}: {len(labs)} trenches, {time.perf_counter() - start:.0f} s; events {tot}; "
-              f"growth {P['growth']:.4f}, end noise {P['sigma_end']:.2f} px, gap noise {P['sigma_gap']:.2f} px (the recipe's), "
-              f"division {P['div_mu']:.1f} ± {P['div_sd']:.1f} px, jump scale {P['jump_scale_px']:.1f} px", flush=True)
+        print(
+            f"round {r + 1}: {len(labs)} trenches, {time.perf_counter() - start:.0f} s; events {tot}; "
+            f"growth {P['growth']:.4f}, end noise {P['sigma_end']:.2f} px, gap noise {P['sigma_gap']:.2f} px (the recipe's), "
+            f"division {P['div_mu']:.1f} ± {P['div_sd']:.1f} px, jump scale {P['jump_scale_px']:.1f} px",
+            flush=True,
+        )
     # a fresh handle, so records written to the store while this ran are kept
-    update_experiment(open_experiment(STORE, mode="r+"), "fits", FIT, {
-        "tracker": TRACKER, "segmentation": SEG, "values": fitted(),
-        "trenches": used, "frames": "all", "rounds": rounds, "started_from": started,
-        "recipe": RECIPE, "fit_start": FIT_START, "pixel_size_um": PX, "frame_interval_min": DT,
-        "made_by": "external/chaintrack/chain.py fit", "chaintrack": code_version(),
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
-    print(f"fit recorded in {STORE.name}, attrs.pymmm.fits[{FIT!r}]: "
-          + ", ".join(f"{k} {v:.4g}" for k, v in fitted().items()), flush=True)
+    update_experiment(
+        open_experiment(STORE, mode="r+"),
+        "fits",
+        FIT,
+        {
+            "tracker": TRACKER,
+            "segmentation": SEG,
+            "values": fitted(),
+            "trenches": used,
+            "frames": "all",
+            "rounds": rounds,
+            "started_from": started,
+            "recipe": RECIPE,
+            "fit_start": FIT_START,
+            "pixel_size_um": PX,
+            "frame_interval_min": DT,
+            "made_by": "external/chaintrack/chain.py fit",
+            "chaintrack": code_version(),
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        },
+    )
+    print(
+        f"fit recorded in {STORE.name}, attrs.pymmm.fits[{FIT!r}]: "
+        + ", ".join(f"{k} {v:.4g}" for k, v in fitted().items()),
+        flush=True,
+    )
 
 
 def write(root, tid, lab, recs, side, frames):
@@ -1223,7 +1682,9 @@ def write(root, tid, lab, recs, side, frames):
             return
         nlab[t] = nlab.get(t, 0) + 1
         seg[t].ravel()[pix] = nlab[t]
-        nodes.append((t, cell, float((pix // W).mean()), float((pix % W).mean()), nlab[t]))
+        nodes.append(
+            (t, cell, float((pix // W).mean()), float((pix % W).mean()), nlab[t])
+        )
 
     for r in recs:
         _, t, entries, divs = r[:4]
@@ -1235,11 +1696,13 @@ def write(root, tid, lab, recs, side, frames):
                 pix = merge_pair(cand[data[0]], cand[data[1]], W)
             else:
                 p = cand[data[0]]
-                pix = p[(p // W) < data[1]] if kind == "upper" else p[(p // W) >= data[1]]
+                pix = (
+                    p[(p // W) < data[1]] if kind == "upper" else p[(p // W) >= data[1]]
+                )
             add(t, cell, pix)
         divisions += divs
         lone |= set(r[10])
-    for sid, seq in (side.items() if P["write_side"] else ()):
+    for sid, seq in side.items() if P["write_side"] else ():
         for t, l in seq:
             add(t, ("side", sid), np.flatnonzero(lab[t].ravel() == l))
     by_cell = {}
@@ -1256,16 +1719,36 @@ def write(root, tid, lab, recs, side, frames):
     e = np.array(edges, np.int64).reshape(-1, 2)
     tt = np.array([n[0] for n in nodes], np.int32)
     track_id, lineage_id = tracklets_and_lineages(len(nodes), tt, e)
-    props = {"t": tt, "y": np.array([n[2] for n in nodes], np.float32), "x": np.array([n[3] for n in nodes], np.float32),
-             "seg_id": np.array([n[4] for n in nodes], np.int32), "track_id": track_id, "lineage_id": lineage_id}
+    props = {
+        "t": tt,
+        "y": np.array([n[2] for n in nodes], np.float32),
+        "x": np.array([n[3] for n in nodes], np.float32),
+        "seg_id": np.array([n[4] for n in nodes], np.int32),
+        "track_id": track_id,
+        "lineage_id": lineage_id,
+    }
     # daughters whose sister went past the bottom unseen: their first nodes (GEFF ids: position + 1);
     # the mother's link to such a daughter is a division, though the graph shows a single child
     first = {cell: min(seq)[1] for cell, seq in by_cell.items()}
     div_one = sorted(int(first[c]) + 1 for c in lone if c in first)
-    write_tracks(root, tid, OUT, props, e, np.full(len(e), np.nan, np.float32), seg,
-                 extra={"tracker": TRACKER, "segmentation": SEG, "params": json.dumps(P, default=str),
-                        "fit": FIT, "chaintrack_commit": code_version()["commit"],
-                        "channels": [str(c) for c in root["C"][:]], "div_one": div_one})
+    write_tracks(
+        root,
+        tid,
+        OUT,
+        props,
+        e,
+        np.full(len(e), np.nan, np.float32),
+        seg,
+        extra={
+            "tracker": TRACKER,
+            "segmentation": SEG,
+            "params": json.dumps(P, default=str),
+            "fit": FIT,
+            "chaintrack_commit": code_version()["commit"],
+            "channels": [str(c) for c in root["C"][:]],
+            "div_one": div_one,
+        },
+    )
 
 
 def alternatives(names):
@@ -1286,25 +1769,58 @@ def record_run(root):
     record is kept and the continuation noted in it."""
     from pymmm.store.experiment_group import update_experiment
 
-    fit = {"name": FIT, "values": {k: FIT_RECORD["values"][k] for k in FIT_KEYS}, "created": FIT_RECORD.get("created")}
+    fit = {
+        "name": FIT,
+        "values": {k: FIT_RECORD["values"][k] for k in FIT_KEYS},
+        "created": FIT_RECORD.get("created"),
+    }
     alts = "none" if BASE_ONLY else (ALTS or "all")
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     old = records(root, "tracks").get(OUT)
     if old is not None:
         old_fit = old.get("fit") or {}
-        same = {"fit": old_fit.get("name") == FIT and old_fit.get("created") == fit["created"],
-                "segmentation": old.get("segmentation") == SEG, "alternatives": old.get("alternatives") == alts}
+        same = {
+            "fit": old_fit.get("name") == FIT
+            and old_fit.get("created") == fit["created"],
+            "segmentation": old.get("segmentation") == SEG,
+            "alternatives": old.get("alternatives") == alts,
+        }
         if not all(same.values()):
-            sys.exit(f"chain.py: the run {OUT!r} of {STORE.name} was made with another "
-                     f"{', '.join(k for k, v in same.items() if not v)}: give this run another name with --out")
-        update_experiment(root, "tracks", OUT, {
-            **old, "continued": [*old.get("continued", []), {"at": now, "chaintrack": code_version()}]})
+            sys.exit(
+                f"chain.py: the run {OUT!r} of {STORE.name} was made with another "
+                f"{', '.join(k for k, v in same.items() if not v)}: give this run another name with --out"
+            )
+        update_experiment(
+            root,
+            "tracks",
+            OUT,
+            {
+                **old,
+                "continued": [
+                    *old.get("continued", []),
+                    {"at": now, "chaintrack": code_version()},
+                ],
+            },
+        )
         return
-    update_experiment(root, "tracks", OUT, {
-        "tracker": TRACKER, "segmentation": SEG, "params": json.loads(json.dumps(P, default=str)),
-        "recipe": RECIPE, "fit": fit, "pixel_size_um": PX, "frame_interval_min": DT,
-        "alternatives": alts, "made_by": "external/chaintrack/chain.py",
-        "chaintrack": code_version(), "created": now})
+    update_experiment(
+        root,
+        "tracks",
+        OUT,
+        {
+            "tracker": TRACKER,
+            "segmentation": SEG,
+            "params": json.loads(json.dumps(P, default=str)),
+            "recipe": RECIPE,
+            "fit": fit,
+            "pixel_size_um": PX,
+            "frame_interval_min": DT,
+            "alternatives": alts,
+            "made_by": "external/chaintrack/chain.py",
+            "chaintrack": code_version(),
+            "created": now,
+        },
+    )
 
 
 def track_trench(tid):
@@ -1323,9 +1839,13 @@ def track_trench(tid):
         recs, side, frames = track(labs)
         seconds = time.perf_counter() - start
         write(_ROOT, tid, labs[0], recs, side, frames)
-        return f"trench {tid}: {len(use)} hypotheses, {seconds:.0f} s; events {stats_of(recs)[0]}", None
-    except Exception:   # noqa: BLE001 - one bad trench must not stop the others
+        return (
+            f"trench {tid}: {len(use)} hypotheses, {seconds:.0f} s; events {stats_of(recs)[0]}",
+            None,
+        )
+    except Exception:  # noqa: BLE001 - one bad trench must not stop the others
         import traceback
+
         return f"trench {tid} failed", traceback.format_exc()
 
 
@@ -1344,10 +1864,15 @@ def track_all(trenches, root, of=None):
         names, labels = segmentation(root, trenches[0], SEG)
         each = 2.5 * (1 + len(alternatives(names))) * labels[0].nbytes
         _WORKERS = workers_for(of or len(trenches), each)
-        print(f"tracking {_WORKERS} trenches at a time (about {each / 1e9:.1f} GB each)", flush=True)
+        print(
+            f"tracking {_WORKERS} trenches at a time (about {each / 1e9:.1f} GB each)",
+            flush=True,
+        )
     workers = _WORKERS
     failed = []
-    for tid, (line, error) in zip(trenches, in_parallel(track_trench, trenches, workers)):
+    for tid, (line, error) in zip(
+        trenches, in_parallel(track_trench, trenches, workers)
+    ):
         print(line if error is None else f"{line}:\n{error}", flush=True)
         if error is not None:
             failed.append(tid)
@@ -1360,7 +1885,9 @@ def run(trenches):
     failed = track_all(trenches, root)
     print(f"tracks: {STORE}/trench_NNNN/tracks/{OUT}.geff", flush=True)
     if failed:
-        sys.exit(f"chain.py: {len(failed)} of {len(trenches)} trenches failed: {' '.join(map(str, failed))}")
+        sys.exit(
+            f"chain.py: {len(failed)} of {len(trenches)} trenches failed: {' '.join(map(str, failed))}"
+        )
 
 
 def follow(trenches):
@@ -1394,20 +1921,36 @@ def parse(args):
 
 if __name__ == "__main__":
     args = sys.argv[2:]
-    for flag, takes in (("--store", 1), ("--recipe", 1), ("--seg", 1), ("--fit", 1), ("--out", 1), ("--alts", 1),
-                        ("--base-only", 0), ("--workers", 1)):
+    for flag, takes in (
+        ("--store", 1),
+        ("--recipe", 1),
+        ("--seg", 1),
+        ("--fit", 1),
+        ("--out", 1),
+        ("--alts", 1),
+        ("--base-only", 0),
+        ("--workers", 1),
+    ):
         if flag in args:
-            k = args.index(flag); args = args[:k] + args[k + 1 + takes:]
+            k = args.index(flag)
+            args = args[:k] + args[k + 1 + takes :]
     from concurrent.futures.process import BrokenProcessPool
 
     try:
         {"fit": fit, "run": run, "follow": follow}[COMMAND](parse(args))
     except BrokenProcessPool:
         # the trenches being tracked at that moment were stopped part-way through writing
-        left = ("No fit was recorded" if COMMAND == "fit" else
-                "The trenches printed above are written; run again for the others")
-        sys.exit("chain.py: a worker process died, most likely killed because the machine ran out of memory, so "
-                 f"this stopped. {left}. Give a smaller --workers if memory was short")
+        left = (
+            "No fit was recorded"
+            if COMMAND == "fit"
+            else "The trenches printed above are written; run again for the others"
+        )
+        sys.exit(
+            "chain.py: a worker process died, most likely killed because the machine ran out of memory, so "
+            f"this stopped. {left}. Give a smaller --workers if memory was short"
+        )
     finally:
-        if _POOL is not None:   # trenches not started yet are dropped; those being tracked finish first
+        if (
+            _POOL is not None
+        ):  # trenches not started yet are dropped; those being tracked finish first
             _POOL.shutdown(wait=True, cancel_futures=True)
