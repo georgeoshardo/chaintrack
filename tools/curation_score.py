@@ -1,5 +1,6 @@
-"""Score tracking runs against the user's Reviewed curations (experiment group, same crops, all
-frames), tolerant of what the curation cannot or need not pin down:
+"""Score tracking runs against Reviewed curations in an experiment group (curated copies of a run,
+made in mm-track, on the same crops and all frames), tolerant of what a curation cannot or need not
+pin down:
 
 - Masks are paired per frame by IoU >= 0.65 (a mask over two cells pairs with neither). Only chain
   masks above the bottom are judged: a mask reaching the bottom EDGE rows (cut off by the crop, never
@@ -15,17 +16,22 @@ frames), tolerant of what the curation cannot or need not pin down:
     skip      the run's predecessor is from another frame (a frame skipped, or not skipped)
     other
 - Masks: curated judged masks with no run partner (missed), run judged masks with no curated
-  partner (extra), and run masks off the centre line (side; the user deleted them all).
+  partner (extra), and run masks off the centre line (side; a curator deletes those).
 - Divisions: a curated division (a judged mask with two judged children, after walking through
   unjudged masks) is found if the run divides the same cell (two children, or a daughter listed in
   the GEFF's extra "div_one") within about DIV_TOL frames along the curated lineage; a curated mother
   with one child at the bottom is not counted as a division. A run division of two judged daughters
   with no curated division near it is extra.
 
-    pixi run -e seg python external/chaintrack/tools/curation_score.py chain_S1,chain_fix_S1 [--v]
-    (--curation RUN: the curated run, default chain_clearbottom_endfix_S1; --trenches 0,2,3: default
-    the Reviewed ones; a run as STORE:RUN is read from another experiment group, e.g. a scratch copy, and --store PATH
-    reads every run from there; the curations are always the real store's)
+    python tools/curation_score.py RUN[,RUN...] --store experiment.zarr --curation CURATED_RUN [--v]
+
+--store is the experiment group holding the curations, and the runs unless a run is given as
+STORE:RUN (read from another experiment group, a temporary copy say). --curation names the run the
+curations were copied from. --trenches 0,2,3 scores those; by default, every Reviewed one. The
+centre line is taken from the base hypothesis of the curated run's segmentation.
+
+EDGE and CENTRE_PX are in pixels and were set for a 40x experiment (0.108 µm per pixel); change
+them for other magnifications.
 """
 import sys
 from collections import Counter, defaultdict
@@ -33,10 +39,19 @@ from collections import Counter, defaultdict
 import numpy as np
 import zarr
 
-S = "/data/phage-signatures/20261005_pbs_psc_yfp_ty013.zarr"
+from pymmm.store.experiment_group import hypotheses, open_experiment, records
+
+if len(sys.argv) < 2 or "--store" not in sys.argv or "--curation" not in sys.argv:
+    sys.exit("usage: curation_score.py RUN[,RUN...] --store experiment.zarr --curation CURATED_RUN "
+             "[--trenches 0,2,3] [--v]")
 RUNS = sys.argv[1].split(",")
-CURRUN = sys.argv[sys.argv.index("--curation") + 1] if "--curation" in sys.argv else "chain_clearbottom_endfix_S1"
-STORE = sys.argv[sys.argv.index("--store") + 1] if "--store" in sys.argv else S
+CURRUN = sys.argv[sys.argv.index("--curation") + 1]
+S = STORE = sys.argv[sys.argv.index("--store") + 1]
+_root = open_experiment(S)
+if CURRUN not in records(_root, "tracks"):
+    sys.exit(f"curation_score.py: {S} records no run {CURRUN!r} (its runs: {sorted(records(_root, 'tracks'))})")
+SEG = records(_root, "tracks")[CURRUN]["segmentation"]
+BASE = f"{SEG}.{hypotheses(_root, SEG)[0]}"   # the label image the centre line is taken from
 VERBOSE = "--v" in sys.argv
 EDGE = 6          # masks reaching the bottom EDGE rows are cut off by the crop: not judged
 CENTRE_PX = 6     # masks further than this from the centre line are side objects
@@ -236,7 +251,7 @@ def score(run, cur, centre):
 
 
 def centre_of(tid):
-    raw = np.asarray(zarr.open_array(f"{S}/trench_{tid:04d}/labels/pc_affinity_ensemble.e250/0", mode="r")[:])
+    raw = np.asarray(zarr.open_array(f"{S}/trench_{tid:04d}/labels/{BASE}/0", mode="r")[:])
     return float(np.median(np.nonzero(raw)[2]))
 
 
