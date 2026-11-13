@@ -1459,8 +1459,31 @@ def merge_pair(a, b, W):
     return np.flatnonzero(closed.ravel()) + top * W
 
 
+class Compressed:
+    """A label stack kept compressed frame by frame (zstd) and read a frame at a time, as
+    stack[t]. Masks are mostly background, so this holds a hypothesis in about 1% of its plain
+    size. Frames read from it are read only.
+    """
+
+    def __init__(self, lab):
+        from numcodecs import Zstd
+
+        self._codec = Zstd(1)
+        self.shape, self.dtype = lab.shape, lab.dtype
+        self._frames = [self._codec.encode(np.ascontiguousarray(f)) for f in lab]
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, t):
+        frame = np.frombuffer(self._codec.decode(self._frames[t]), self.dtype)
+        return frame.reshape(self.shape[1:])
+
+
 def track(labs):
-    """labs: cleaned label stacks, the base hypothesis first, then any alternatives."""
+    """labs: cleaned label stacks, the base hypothesis first (a plain array), then any
+    alternatives (anything that gives a frame as stack[t], such as Compressed).
+    """
     lab = labs[0]
     T, _, W = lab.shape
     H = visible_end(lab)
@@ -1869,7 +1892,10 @@ def track_trench(tid):
             _ROOT = open_experiment(STORE, mode="r+")
         names, labels = segmentation(_ROOT, tid, SEG)
         use = [0, *alternatives(names)]
-        labs = [clean(np.asarray(labels[h][...])) for h in use]
+        # the base stays a plain array: it is relabelled in place and written. The alternatives
+        # are read a frame at a time, so they are kept compressed.
+        labs = [clean(np.asarray(labels[use[0]][...]))]
+        labs += [Compressed(clean(np.asarray(labels[h][...]))) for h in use[1:]]
         start = time.perf_counter()
         recs, side, frames = track(labs)
         seconds = time.perf_counter() - start
@@ -1895,10 +1921,11 @@ def track_all(trenches, root, of=None):
     if not trenches:
         return []
     if _WORKERS is None:
-        # A trench needs about 2.5 times the size of the masks it reads (measured: 6.3 to 6.5 GB for
-        # 14 hypotheses of 848 x 944 x 128 uint16), which is what limits how many are tracked at once
-        names, labels = segmentation(root, trenches[0], SEG)
-        each = 2.5 * (1 + len(alternatives(names))) * labels[0].nbytes
+        # A worker needs about 0.5 GB plus 6 times the size of one hypothesis's masks, however many
+        # alternatives it reads, since those are kept compressed (measured: at most 2.0 GB for
+        # 14 hypotheses of 1029 x 960 x 128 uint16, a worker tracking several trenches in turn)
+        _names, labels = segmentation(root, trenches[0], SEG)
+        each = 0.5e9 + 6 * labels[0].nbytes
         _WORKERS = workers_for(of or len(trenches), each)
         print(
             f"tracking {_WORKERS} trenches at a time (about {each / 1e9:.1f} GB each)",
