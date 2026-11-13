@@ -17,13 +17,12 @@ than the smallest plausible newborn, (div_mu - 3 div_sd) / 2, is removed whole, 
 the recipe's crop_bottom_um so is a mask with more than half its area in those bottom rows (for
 crops that reach the halo at the trench opening; PyMMM's crops stop above it, so 0 by default),
 and with clear_bottom_um any mask reaching those bottom rows (a cell cut off by the crop's edge;
-Omnipose stops such a mask 3-4 px short of the edge at 40x); the masks kept are kept whole. What is left is: one mask per cell, one cell
+segmentation often stops such a mask a few pixels short of the edge); the masks kept are kept whole. What is left is: one mask per cell, one cell
 cut into two masks, one mask over two cells. Each frame the predicted chain is aligned to
 the masks in order; a cell is judged by its own length and by the gap between its mask
 and the mask of the last cell above that has one, so errors never build up down the column.
 A beam of lineage histories lets the frames after an event decide what it was.
-At the open end and in lysis waves (on in the recipe since 2026-11-09, when they agreed best with
-the Reviewed curations; runs made before, such as chain_S1, had them off):
+At the open end and in lysis waves, three switches in the recipe (all on in the example recipe):
   - a cell cut off by the bottom edge has an unknown length, but no shorter than predicted: it can
     show whole again only that long (not as a short mask, which is its upper daughter, nor shared
     with its sister in one short mask). The recipe's trunc_bound;
@@ -35,11 +34,11 @@ the Reviewed curations; runs made before, such as chain_S1, had them off):
 Cells off the centre line (side cells, beside the column) are tracked first and kept out of
 the chain: each follows the nearest similar mask, reaching the centre line only by drifting.
 Where the base merges a side cell into a chain cell and an alternative segmentation draws them
-apart, that cut is used (see split_side). Their tracks are not written (the recipe's write_side
-writes them, as runs before 2026-11-09 did).
+apart, that cut is used (see split_side). Their tracks are not written unless the recipe's
+write_side is on.
 
-The constants set by hand are a recipe (a toml; phage-signatures keeps
-recipes/tracking/chain.toml), in µm and minutes, so one recipe serves every magnification and
+The constants set by hand are a recipe (a toml; tests/data/recipe.toml is a complete one, each
+key explained), in µm and minutes, so one recipe serves every magnification and
 frame rate: chaintrack reads the store's pixel size and frame interval and works in pixels and
 frames (RECIPE_KEYS says how each key is converted; lengths counted in pixels become whole
 pixels, a probability per minute becomes the probability over one frame, and the segmentation
@@ -58,7 +57,7 @@ first fit starts from the recipe's [fit_start], a later one from the store's las
 The gap noise (how much the gap above a cell changes from one frame to the next) is not fitted:
 it is the recipe's sigma_gap_um. Gap changes are whole pixels and more than half of them are 0,
 so the robust spread the fit uses reads them as no noise at all, at any magnification; as a
-plain spread they are 0.07 µm at 40x (20261005_pbs_psc_yfp_ty013) and at 100x alike.
+plain spread they were about 0.07 µm in both the 40x and the 100x data chaintrack was built on.
 
 The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
@@ -66,7 +65,7 @@ labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base fi
 beside it, as the run <out> (default chain): the GEFF tracks/<out>.geff and the masks it chose,
 labels/tracks.<out>. A tracker never writes curation/ (mm-track makes the curated copy at the first
 edit), so re-running replaces tracker output only. `follow` does the same for each trench as soon
-as its segmentation is finished, while PyMMM's Segmenter (segment.ipynb) is still segmenting the others.
+as its segmentation is finished, while PyMMM's Segmenter is still segmenting the others.
 A run's record in the store (attrs.pymmm.tracks[<out>]) holds the fit, the fit's recipe, the
 parameters as used (pixels and frames), the store's calibration and chaintrack's commit.
 
@@ -74,18 +73,17 @@ Trenches are independent, so `fit`, `run` and `follow` track several at once, ea
 process: as many as the cores and the free memory allow, or --workers N. A trench's tracks do not
 depend on how many are tracked at once.
 
-    cd /data/phage-signatures
-    S="--store 20261005_pbs_psc_yfp_ty013.zarr --seg pc_affinity_ensemble"
-    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/chain.toml
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S
-    pixi run -e seg python external/chaintrack/chain.py follow 0-436 $S --out chain_alt
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --base-only --out chain_base
+    S="--store experiment.zarr --seg <segmentation>"
+    python chain.py fit 0-7 $S --recipe tests/data/recipe.toml
+    python chain.py run 0-99 $S
+    python chain.py follow 0-99 $S --out chain_live
+    python chain.py run 0-9 $S --base-only --out chain_base
 
 A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) needs a fit
 made with another recipe file:
 
-    pixi run -e seg python external/chaintrack/chain.py fit 2-9 $S --recipe recipes/tracking/wide.toml --fit wide
-    pixi run -e seg python external/chaintrack/chain.py run 0-9 $S --fit wide --out chain_wide
+    python chain.py fit 0-7 $S --recipe wide.toml --fit wide
+    python chain.py run 0-9 $S --fit wide --out chain_wide
 """
 import json
 import os
@@ -136,7 +134,7 @@ STORE = Path(STORE)
 # the fit to use, or to make: the store's record attrs.pymmm.fits[<fit>] (--fit NAME, default the segmentation's name)
 FIT = option("--fit") or SEG
 # a segmentation with several hypotheses: the first is the base, the others its alternatives (which
-# checkpoints those are is in the store's record of the segmentation); --alts e050,e150
+# hypotheses those are is in the store's record of the segmentation); --alts a,b
 # uses only those, --base-only the base alone
 ALTS = option("--alts").split(",") if "--alts" in sys.argv else None
 BASE_ONLY = "--base-only" in sys.argv

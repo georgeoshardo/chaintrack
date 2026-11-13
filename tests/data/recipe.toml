@@ -1,7 +1,6 @@
 # chaintrack's recipe: every constant set by hand, in µm and minutes.
 #
-#     python external/chaintrack/chain.py fit 2-9 --store <experiment>.zarr \
-#         --seg pc_affinity_ensemble --recipe recipes/tracking/chain.toml
+#     python chain.py fit 0-7 --store experiment.zarr --seg <segmentation> --recipe recipe.toml
 #
 # chain.py converts these with the store's pixel size and frame interval, so one recipe
 # serves every magnification and frame rate. The five fitted values (growth, the noise of a
@@ -14,9 +13,8 @@
 # changes nothing for experiments already fitted: an experiment picks up an edit only when it
 # is fitted again, under a new fit name.
 #
-# The values are those tuned on the 40x experiment 20261005_pbs_psc_yfp_ty013 (0.1079 µm per
-# pixel, a frame a minute); each comment gives what the value is in that experiment's pixels
-# and frames.
+# The values were tuned on a 40x experiment (0.1079 µm per pixel, a frame a minute); where a
+# comment gives a value in pixels or frames, it is in that experiment's.
 
 beam = 40                     # lineage histories kept each frame: wider lets later frames overturn more calls, slower
 
@@ -26,9 +24,8 @@ sigma_daughter = 0.15         # log size of each daughter relative to half the m
 # 0.054 µm: noise of the gap above a cell from one frame to the next. Not fitted: gap changes are whole
 # pixels and more than half are 0, which the fit's robust spread reads as no noise at all; as a plain
 # spread they are 0.07 µm at 40x and at 100x alike. Beyond 4 of these a change counts as a jump.
-# Written out in full because it is exactly half a pixel of the 40x experiment
-# 20261005_pbs_psc_yfp_ty013 (0.107869821220548 µm), which keeps that experiment's tracks as they were:
-# rounded to 0.05393 it changed 2 links in one of 16 trenches.
+# Written out in full because it is exactly half a pixel of that 40x experiment (0.107869821220548
+# µm), which keeps its tracks as they were: rounded to 0.05393 it changed 2 links in one of 16 trenches.
 sigma_gap_um = 0.053934910610274
 p_jump_per_min = 0.005        # the gap above a cell jumps, per minute
 p_slide_per_min = 0.005       # the top cell (and so the column) jumps, per minute
@@ -67,7 +64,7 @@ side_max_cost = 16.0          # anything worse is not the same cell (4 sigma)
 side_min_overlap = 0.3        # an off-centre cell reaches the centre line only by drifting: its mask there overlaps its last one by this much of the smaller
 side_min_piece_um2 = 0.35     # 30 px: an alternative separates a side cell from a chain cell only into pieces at least this big
 side_alt_cut = true           # a new off-centre mask that alternatives cut into a chain and a side piece is cut
-side_alt_piece = false        # a side cell the base merged into a chain cell continues on an alternative's piece: off, as a decision made before the chain it can shift the chain (20261005_pbs_psc_yfp_ty013 trench 1, frame 40); it belongs in the beam
+side_alt_piece = false        # a side cell the base merged into a chain cell continues on an alternative's piece: off, as a decision made before the chain it can shift the chain; it belongs in the beam
 side_window_um = 4.3          # 40 px: how far along the trench such a piece is looked for
 
 # --- where a store's first fit starts (a later fit starts from the store's last) --------
