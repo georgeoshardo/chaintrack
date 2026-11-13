@@ -1,7 +1,7 @@
 # chaintrack
 
 A mother-machine trench tracked as an ordered chain of cells, judged by size and spacing, with a
-beam of lineage histories. Masks only (no image). Rates are fitted per store without labels.
+beam of lineage histories.[^jug] Masks only (no image). Rates are fitted per store without labels.
 The model is described in the docstring at the top of `chain.py`.
 
 Run from the phage-signatures repo, whose pixi `seg` environment it uses:
@@ -75,3 +75,7 @@ Run from the phage-signatures repo, whose pixi `seg` environment it uses:
   tolerating what a curation can't pin down (cells cut off at the bottom, divisions a frame or two
   apart). `tools/evaluate.py` scores runs against a curated collection, and `tools/frames_links.py`
   prints links frame by frame.
+
+[^jug]: Two ideas here are from Jug et al. (2014), *Optimal Joint Segmentation and
+    Tracking of Escherichia coli in the Mother Machine*: cells in a trench keep their
+    order, and the tracker chooses among several segmentation hypotheses.
