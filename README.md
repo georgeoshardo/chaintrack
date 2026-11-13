@@ -73,8 +73,18 @@ Run from the phage-signatures repo, whose pixi `seg` environment it uses:
     with an error at once. The trenches printed by then are written; run again for the others.
 - `tools/curation_score.py` scores runs against the Reviewed curations in the experiment group,
   tolerating what a curation can't pin down (cells cut off at the bottom, divisions a frame or two
-  apart). `tools/evaluate.py` scores runs against a curated collection, and `tools/frames_links.py`
-  prints links frame by frame.
+  apart).
+
+## Tests
+
+    python -m pytest tests        # about 30 s; in an environment with PyMMM, numba and geff
+
+One regression test: `tests/data/masks.npz` holds two trenches' masks under 14 hypotheses, from
+a 100x phage experiment (`20231220_SB8_TY009_sytox_phage`, 190 frames; in one trench every
+cell lyses). The test builds an experiment group from them, runs `fit` and `run` with
+`tests/data/recipe.toml`, and compares the fit and the tracks with `tests/data/expected.npz`,
+several trenches at once and one at a time. After an intended change, rewrite the expected
+tracks with `CHAINTRACK_UPDATE=1` and review what changed. `tests/make_data.py` remakes the masks.
 
 [^jug]: Two ideas here are from Jug et al. (2014), *Optimal Joint Segmentation and
     Tracking of Escherichia coli in the Mother Machine*: cells in a trench keep their

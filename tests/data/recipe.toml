@@ -1,0 +1,79 @@
+# chaintrack's recipe: every constant set by hand, in µm and minutes.
+#
+#     python external/chaintrack/chain.py fit 2-9 --store <experiment>.zarr \
+#         --seg pc_affinity_ensemble --recipe recipes/tracking/chain.toml
+#
+# chain.py converts these with the store's pixel size and frame interval, so one recipe
+# serves every magnification and frame rate. The five fitted values (growth, the noise of a
+# mask's ends, the length at division and its spread, the size of a jump) are not here:
+# `chain.py fit` measures them on a store's own trenches. Every key is required and unknown
+# keys are refused.
+#
+# Only `fit` reads this file. It freezes a copy of the file's contents in the store's fit
+# record, and tracking that experiment (`chain.py run`) uses that copy. So editing this file
+# changes nothing for experiments already fitted: an experiment picks up an edit only when it
+# is fitted again, under a new fit name.
+#
+# The values are those tuned on the 40x experiment 20261005_pbs_psc_yfp_ty013 (0.1079 µm per
+# pixel, a frame a minute); each comment gives what the value is in that experiment's pixels
+# and frames.
+
+beam = 40                     # lineage histories kept each frame: wider lets later frames overturn more calls, slower
+
+# --- the chain -------------------------------------------------------------------------
+max_length_change = 1.25      # outside a division, a cell's masks fit its predicted length within this factor
+sigma_daughter = 0.15         # log size of each daughter relative to half the mother
+# 0.054 µm: noise of the gap above a cell from one frame to the next. Not fitted: gap changes are whole
+# pixels and more than half are 0, which the fit's robust spread reads as no noise at all; as a plain
+# spread they are 0.07 µm at 40x and at 100x alike. Beyond 4 of these a change counts as a jump.
+# Written out in full because it is exactly half a pixel of the 40x experiment
+# 20261005_pbs_psc_yfp_ty013 (0.107869821220548 µm), which keeps that experiment's tracks as they were:
+# rounded to 0.05393 it changed 2 links in one of 16 trenches.
+sigma_gap_um = 0.053934910610274
+p_jump_per_min = 0.005        # the gap above a cell jumps, per minute
+p_slide_per_min = 0.005       # the top cell (and so the column) jumps, per minute
+p_lysis_per_min = 0.003       # a cell lyses, per minute
+appear_cost = 40.0            # no new cells: only when nothing else can explain a mask
+
+# --- segmentation errors, per frame (they describe one image, not a stretch of time) ---
+p_over = 0.01                 # one cell cut into two masks
+p_under = 0.01                # one mask over two cells
+p_under_sisters = 0.2         # ... over sisters born within sisters_min
+sisters_min = 3.0             # 3 frames
+p_alt = 0.01                  # the base segmentation is wrong at a spot, so another hypothesis's cut is right
+p_miss = 0.01                 # a cell has no mask this frame
+max_miss_frames = 3           # ... for at most this many frames in a row
+
+# --- the trench, in whole pixels once converted ----------------------------------------
+centre_um = 0.65              # 6 px: masks further than this from the centre line are off the chain
+exit_visible_um = 0.86        # 8 px
+max_gap_um = 0.86             # 8 px: an over-cut cell's two masks are joined across a gap up to this
+cut_off_um = 0.22             # 2 px: a mask ending within this of where the masks stop is a cell cut off there
+crop_bottom_um = 0.0          # masks mostly in these bottom rows (the halo at the trench opening) are removed
+clear_bottom_um = 0.0         # masks reaching these bottom rows (cut off by the crop's edge) are removed
+
+# --- at the open end and in lysis waves ------------------------------------------------
+trunc_bound = true            # a cut-off cell's predicted length is a lower bound once it shows whole
+div_one = true                # a division may leave its lower daughter unseen past the bottom
+no_revival = true             # an unseen cell reappears near where it was predicted, never by a jump
+revival_um_per_min = 0.4315   # 4 px per frame: ... within this per unseen minute, plus 4 gap sigma
+
+# --- cells off the centre line (side cells) --------------------------------------------
+write_side = false            # write the off-centre cells' tracks
+side_sigma_y_um = 1.618       # 15 px: an off-centre cell between frames, along the trench
+side_sigma_x_um = 0.4315      # 4 px: ... across it
+side_sigma_area = 0.1         # ... log area
+side_max_cost = 16.0          # anything worse is not the same cell (4 sigma)
+side_min_overlap = 0.3        # an off-centre cell reaches the centre line only by drifting: its mask there overlaps its last one by this much of the smaller
+side_min_piece_um2 = 0.35     # 30 px: an alternative separates a side cell from a chain cell only into pieces at least this big
+side_alt_cut = true           # a new off-centre mask that alternatives cut into a chain and a side piece is cut
+side_alt_piece = false        # a side cell the base merged into a chain cell continues on an alternative's piece: off, as a decision made before the chain it can shift the chain (20261005_pbs_psc_yfp_ty013 trench 1, frame 40); it belongs in the beam
+side_window_um = 4.3          # 40 px: how far along the trench such a piece is looked for
+
+# --- where a store's first fit starts (a later fit starts from the store's last) --------
+[fit_start]
+growth_per_min = 0.029        # log length per minute
+sigma_end_um = 0.108          # 1 px: noise of each end of a mask
+div_um = 6.21                 # 57.6 px: length at division
+div_sd_um = 0.66              # 6.1 px
+jump_scale_um = 2.16          # 20 px: typical size of a jump
