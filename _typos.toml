@@ -1,0 +1,5 @@
+# The spell-checker run by the pre-commit hooks: words it would otherwise correct.
+[default.extend-words]
+ba = "ba"        # box of mask a, as in ba / bb
+nd = "nd"        # ND2
+ome = "ome"      # OME-Zarr
