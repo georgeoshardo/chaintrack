@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-
 from pymmm.store.experiment_group import calibration, open_experiment, segmentation
 
 store, seg, frames, trenches = (

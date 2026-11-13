@@ -86,6 +86,7 @@ made with another recipe file:
     python chain.py run 0-9 $S --fit wide --out chain_wide
 """
 
+import itertools
 import json
 import os
 import subprocess
@@ -97,10 +98,9 @@ from pathlib import Path
 
 import numba
 import numpy as np
+from pymmm.store.experiment_group import calibration, open_experiment, records
 from scipy import ndimage as ndi
 from scipy.special import ndtr
-
-from pymmm.store.experiment_group import calibration, open_experiment, records
 
 HERE = Path(__file__).resolve().parent
 TRACKER = "chain"
@@ -210,8 +210,12 @@ FIT_KEYS = {
 def check_recipe(constants, start, where):
     """Stop unless a recipe is one this chaintrack can use: every key there, none unknown, each a
     number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
-    or None for a recipe that carries none (one frozen in a store)."""
-    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    or None for a recipe that carries none (one frozen in a store).
+    """
+
+    def number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
     right = {
         "flag": lambda v: isinstance(v, bool),
         "count": lambda v: isinstance(v, int) and not isinstance(v, bool),
@@ -245,11 +249,11 @@ def to_pixels(value, how):
     if how == "px":
         return value / PX
     if how == "whole px":
-        return int(round(value / PX))
+        return round(value / PX)
     if how == "whole px2":
-        return int(round(value / PX**2))
+        return round(value / PX**2)
     if how == "frames":
-        return int(round(value / DT))
+        return round(value / DT)
     if how == "px per frame":
         return value * DT / PX
     if how == "per frame":
@@ -269,12 +273,15 @@ def fitted():
 
 @lru_cache(maxsize=1)
 def code_version():
-    """chaintrack's commit, and whether tracked files had uncommitted changes (None outside git)."""
+    """The commit of chaintrack, and whether tracked files had uncommitted changes.
+
+    None outside git.
+    """
 
     def git(*args):
         try:
-            return subprocess.run(
-                ["git", "-C", str(HERE), *args],
+            return subprocess.run(  # noqa: S603 - fixed git arguments
+                ["git", "-C", str(HERE), *args],  # noqa: S607
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -321,9 +328,17 @@ P.update(
     }
 )
 
-MOVE = dict(
-    match=0, div=1, over=2, under=3, miss=4, lysis=5, exit=6, appear=7, div_one=8
-)
+MOVE = {
+    "match": 0,
+    "div": 1,
+    "over": 2,
+    "under": 3,
+    "miss": 4,
+    "lysis": 5,
+    "exit": 6,
+    "appear": 7,
+    "div_one": 8,
+}
 INF = 1e18
 
 
@@ -372,7 +387,8 @@ def align(
     (for a division or a cell cut into two masks; sd and so are indexed by that position), and
     end_ok[s] says whether the frame's masks may end there. Search state (i cells, s, a = 1 + the
     last cell given a mask, 0 if none yet). Spacing is judged against the mask of that cell (or
-    the closed end); size by the move's own terms."""
+    the closed end); size by the move's own terms.
+    """
     n = sm.shape[0]
     S = end_ok.shape[0]
     dp = np.full((n + 1, S, n + 1), INF)
@@ -533,15 +549,15 @@ def align(
 
 class Hyp:
     __slots__ = (
+        "born",
         "ids",
-        "top",
         "length",
         "parent",
-        "born",
-        "unseen",
-        "trunc",
-        "score",
         "rec",
+        "score",
+        "top",
+        "trunc",
+        "unseen",
     )
 
     def __init__(self, ids, top, length, parent, born, unseen, trunc, score, rec):
@@ -589,7 +605,8 @@ def frame_masks(frame, H):
 
 def side_cost(o, last):
     """How unlike the off-centre cell `last` the mask `o` is: it can move along the trench a fair
-    way, but keeps its size and stays near its own sideways position."""
+    way, but keeps its size and stays near its own sideways position.
+    """
     return (
         ((o[4] - last[4]) / P["side_sigma_y"]) ** 2
         + (np.log(o[5] / last[5]) / P["side_sigma_area"]) ** 2
@@ -600,7 +617,8 @@ def side_cost(o, last):
 def may_follow(o, frame, previous, centre):
     """An off-centre cell may continue on a mask on the centre line only by drifting (or turning)
     onto it, so that the mask overlaps its last one, not by jumping to a chain cell next to it.
-    previous: (frame, label) of the cell's last mask."""
+    previous: (frame, label) of the cell's last mask.
+    """
     if abs(o[6] - centre) > P["centre_px"]:
         return True
     a = np.flatnonzero(frame.ravel() == o[2])
@@ -624,7 +642,8 @@ def mask_stats(pix, W):
 def alt_side_piece(frame, alt_frames, last, centre, claimed):
     """For an off-centre cell with no base mask of its own this frame: the piece of an unclaimed
     base mask that an alternative draws as a mask of its own, off-centre and like the cell (the
-    base merged the cell into a chain cell). (host label, flat pixels of the piece) or None."""
+    base merged the cell into a chain cell). (host label, flat pixels of the piece) or None.
+    """
     W = frame.shape[1]
     flat = frame.ravel()
     lo, hi = (
@@ -665,7 +684,8 @@ def alt_side_piece(frame, alt_frames, last, centre, claimed):
 def alt_centre_cut(frame, alt_frames, host, centre):
     """For a new off-centre base mask: the off-centre piece that alternatives cut out of it, leaving
     a piece on the centre line (the base merged a side cell into a chain cell), if at least two
-    alternatives cut it alike (IoU >= 0.8). Flat pixels of the piece, or None."""
+    alternatives cut it alike (IoU >= 0.8). Flat pixels of the piece, or None.
+    """
     W = frame.shape[1]
     host_pix = np.flatnonzero(frame.ravel() == host)
     found = []  # (piece, votes)
@@ -703,7 +723,8 @@ def split_side(lab, centre, H, alts=()):
     cannot jump across onto a chain cell). With alternative segmentations (alts, label stacks like
     lab), a side cell the base merges into a chain cell continues on the piece an alternative draws
     for it, and a new off-centre mask that alternatives cut into a chain piece and a side piece is
-    cut: lab is relabelled in place there (the piece gets a new label, the rest keeps the mask's)."""
+    cut: lab is relabelled in place there (the piece gets a new label, the rest keeps the mask's).
+    """
     obs, tracks, active, nid, side_labels = [], {}, [], 0, []
 
     def last_mask(tid):
@@ -766,7 +787,7 @@ def split_side(lab, centre, H, alts=()):
             # a piece just cut out may be the side cell that lost its mask to the merge
             best = None
             if piece is not None:
-                for k, (tid, last, missed) in enumerate(still):
+                for k, (tid, last, _missed) in enumerate(still):
                     c = side_cost(o, last)
                     if (
                         c <= P["side_max_cost"]
@@ -805,7 +826,7 @@ def label_groups(frame):
     order = np.argsort(lab, kind="stable")
     lab, nz = lab[order], nz[order]
     ids, first = np.unique(lab, return_index=True)
-    bounds = list(first) + [len(lab)]
+    bounds = [*list(first), len(lab)]
     return [(int(l), nz[bounds[k] : bounds[k + 1]]) for k, l in enumerate(ids)]
 
 
@@ -828,20 +849,21 @@ class Frame:
     pix: flat pixel indices per candidate; base: the base masks' indices; sptr/sidx: the masks
     that can come next from each state (0 = before any mask, j + 1 = after mask j); pptr/pj/pj2:
     the pairs of masks that can follow each other (no_div: not as a mother's daughters);
-    end_ok: states the frame may end at."""
+    end_ok: states the frame may end at.
+    """
 
     __slots__ = (
-        "masks",
-        "pix",
+        "alt_first",
         "base",
-        "sptr",
-        "sidx",
-        "pptr",
+        "end_ok",
+        "masks",
+        "no_div",
+        "pix",
         "pj",
         "pj2",
-        "end_ok",
-        "alt_first",
-        "no_div",
+        "pptr",
+        "sidx",
+        "sptr",
     )
 
     def __init__(self, base_obs, base_frame, alt_frames, side_labels, centre, H):
@@ -918,7 +940,10 @@ class Frame:
         members = {}
         for c in range(len(info)):
             members.setdefault(find(c), []).append(c)
-        key = lambda c: (info[c][0], info[c][1], c)
+
+        def key(c):
+            return (info[c][0], info[c][1], c)
+
         regions = []
         for mem in sorted(members.values(), key=lambda m: min(key(c) for c in m)):
             inside = set(mem)
@@ -1173,18 +1198,18 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     obs = frame.masks
     ids, top, length, parent, born, unseen, trunc = [], [], [], [], [], [], []
     entries, divisions, lone = [], [], []
-    events = dict(
-        div=0,
-        div_one=0,
-        over=0,
-        under=0,
-        miss=0,
-        lysis=0,
-        exit=0,
-        appear=0,
-        jump=0,
-        slide=0,
-    )
+    events = {
+        "div": 0,
+        "div_one": 0,
+        "over": 0,
+        "under": 0,
+        "miss": 0,
+        "lysis": 0,
+        "exit": 0,
+        "appear": 0,
+        "jump": 0,
+        "slide": 0,
+    }
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     ref_bot, ref_cell = None, None  # mask bottom and cell of the last cell with a mask
 
@@ -1271,7 +1296,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             o = obs[j]
             spacing(i, o[0])
             frac = grown[i] / (grown[i] + grown[i + 1])
-            cut = int(round(o[0] + frac * (o[1] - o[0] + 1)))
+            cut = round(o[0] + frac * (o[1] - o[0] + 1))
             keep(h.ids[i], o[0], cut - o[0], h.parent[i], h.born[i], 0, False)
             entries.append((h.ids[i], "upper", (o[2], cut)))
             L2 = o[1] - cut + 1
@@ -1377,7 +1402,7 @@ def step(hyps, frame, H, t, new_id):
     children.sort(key=lambda c: c.score)
     out, seen = [], set()
     for c in children:
-        key = (tuple(c.ids), tuple(int(round(x)) for x in c.top))
+        key = (tuple(c.ids), tuple(round(x) for x in c.top))
         if key not in seen:
             seen.add(key)
             out.append(c)
@@ -1390,7 +1415,8 @@ def visible_end(lab):
     """Where this segmentation's masks stop at the open end: the median lowest mask row over the
     frames whose lowest mask is within a cell length of the crop's bottom. That is the crop's
     bottom for the mCherry masks; PC masks stop a few px short of the trench opening, and a mask
-    ending there is a cell cut off by the edge of what is seen, not a short cell."""
+    ending there is a cell cut off by the edge of what is seen, not a short cell.
+    """
     H = lab.shape[1]
     low = np.array([np.flatnonzero(f.any(1)).max() for f in lab if f.any()])
     low = low[low >= H - P["div_mu"]]
@@ -1400,7 +1426,8 @@ def visible_end(lab):
 def clean(lab):
     """The masks the tracker sees: whole masks only, without those that have more than half
     their area in the bottom crop_bottom_px rows, without those reaching the bottom clear_bottom_px
-    rows, and without those shorter than the smallest plausible newborn, (div_mu - 3 div_sd) / 2."""
+    rows, and without those shorter than the smallest plausible newborn, (div_mu - 3 div_sd) / 2.
+    """
     lab = np.array(lab)
     cut = lab.shape[1] - P["crop_bottom_px"]
     edge = lab.shape[1] - P["clear_bottom_px"] if P["clear_bottom_px"] else lab.shape[1]
@@ -1487,18 +1514,18 @@ def track(labs):
 
 
 def stats_of(recs):
-    tot = dict(
-        div=0,
-        div_one=0,
-        over=0,
-        under=0,
-        miss=0,
-        lysis=0,
-        exit=0,
-        appear=0,
-        jump=0,
-        slide=0,
-    )
+    tot = {
+        "div": 0,
+        "div_one": 0,
+        "over": 0,
+        "under": 0,
+        "miss": 0,
+        "lysis": 0,
+        "exit": 0,
+        "appear": 0,
+        "jump": 0,
+        "slide": 0,
+    }
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     for r in recs[1:]:
         for k, v in r[4].items():
@@ -1520,7 +1547,8 @@ _ROOT = None  # this process's handle on the store, for writing a trench's track
 
 def workers_for(tasks, bytes_each):
     """How many trenches to track at once: --workers, or as many as the cores and the free memory
-    allow when each needs about `bytes_each` (never more than there are trenches)."""
+    allow when each needs about `bytes_each` (never more than there are trenches).
+    """
     if WORKERS is not None:
         return max(1, min(int(WORKERS), tasks))
     try:
@@ -1543,7 +1571,8 @@ def in_parallel(function, tasks, workers):
 
     A worker that dies (killed when the machine runs out of memory, say) raises BrokenProcessPool
     here and stops the others: a ProcessPoolExecutor notices, where multiprocessing.Pool would
-    wait for that trench for ever."""
+    wait for that trench for ever.
+    """
     global _POOL
     if workers <= 1 and _POOL is None:
         return map(function, tasks)
@@ -1566,7 +1595,8 @@ def fit_track(task):
 
 def fit(trenches, rounds=3):
     """Measure the fitted parameters on these trenches' own tracks (the base hypothesis, tracked
-    with the current values, `rounds` times over), and record them in the store as its fit FIT."""
+    with the current values, `rounds` times over), and record them in the store as its fit FIT.
+    """
     from pymmm.store.experiment_group import segmentation, update_experiment
 
     root = open_experiment(STORE)
@@ -1596,23 +1626,26 @@ def fit(trenches, rounds=3):
         if lab.any():
             used.append(int(t))
             labs.append(clean(lab))
-    mad = lambda v: 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
+
+    def mad(v):
+        return 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
+
     # allow each trench 4 times its masks' size (a guess: the fit reads one hypothesis, and its
     # memory was not measured)
     workers = workers_for(len(labs), 4 * max((lab.nbytes for lab in labs), default=1))
     for r in range(rounds):
-        tot = dict(
-            div=0,
-            div_one=0,
-            over=0,
-            under=0,
-            miss=0,
-            lysis=0,
-            exit=0,
-            appear=0,
-            jump=0,
-            slide=0,
-        )
+        tot = {
+            "div": 0,
+            "div_one": 0,
+            "over": 0,
+            "under": 0,
+            "miss": 0,
+            "lysis": 0,
+            "exit": 0,
+            "appear": 0,
+            "jump": 0,
+            "slide": 0,
+        }
         lens, gaps, divlen, growth, jumps = [], [], [], [], []
         start = time.perf_counter()
         # the trenches' statistics are gathered in the trenches' order, however many are tracked at once
@@ -1673,7 +1706,7 @@ def fit(trenches, rounds=3):
 def write(root, tid, lab, recs, side, frames):
     from pymmm.store.geff import tracklets_and_lineages, write_tracks
 
-    T, H, W = lab.shape
+    _T, _H, W = lab.shape
     seg = np.zeros(lab.shape, np.uint16)
     nodes, nlab, divisions, lone = [], {}, [], set()
 
@@ -1709,9 +1742,9 @@ def write(root, tid, lab, recs, side, frames):
     for k, (t, cell, *_r) in enumerate(nodes):
         by_cell.setdefault(cell, []).append((t, k))
     edges = []
-    for cell, seq in by_cell.items():
+    for seq in by_cell.values():
         seq.sort()
-        edges += [(a[1], b[1]) for a, b in zip(seq, seq[1:])]
+        edges += [(a[1], b[1]) for a, b in itertools.pairwise(seq)]
     for mother, daughter in divisions:
         ms, ds = by_cell.get(mother), by_cell.get(daughter)
         if ms and ds:
@@ -1766,7 +1799,8 @@ def record_run(root):
 
     A run already in the store is continued only with the same fit (and so the same recipe), the
     same segmentation and the same alternatives, so that one run is never tracked two ways; its
-    record is kept and the continuation noted in it."""
+    record is kept and the continuation noted in it.
+    """
     from pymmm.store.experiment_group import update_experiment
 
     fit = {
@@ -1825,7 +1859,8 @@ def record_run(root):
 
 def track_trench(tid):
     """Track one trench and write its tracks into the store: the line to print, and the error if
-    it failed. A trench writes only inside its own folder, so several can be written at once."""
+    it failed. A trench writes only inside its own folder, so several can be written at once.
+    """
     from pymmm.store.experiment_group import segmentation
 
     global _ROOT
@@ -1833,7 +1868,7 @@ def track_trench(tid):
         if _ROOT is None:
             _ROOT = open_experiment(STORE, mode="r+")
         names, labels = segmentation(_ROOT, tid, SEG)
-        use = [0] + alternatives(names)
+        use = [0, *alternatives(names)]
         labs = [clean(np.asarray(labels[h][...])) for h in use]
         start = time.perf_counter()
         recs, side, frames = track(labs)
@@ -1843,7 +1878,7 @@ def track_trench(tid):
             f"trench {tid}: {len(use)} hypotheses, {seconds:.0f} s; events {stats_of(recs)[0]}",
             None,
         )
-    except Exception:  # noqa: BLE001 - one bad trench must not stop the others
+    except Exception:
         import traceback
 
         return f"trench {tid} failed", traceback.format_exc()
@@ -1852,7 +1887,8 @@ def track_trench(tid):
 def track_all(trenches, root, of=None):
     """Track these trenches several at a time, printing each one's line in the trenches' order;
     the trenches that failed. `of`: how many trenches the whole job has, when these are only the
-    first of them (`follow`), so that enough workers are started for the rest."""
+    first of them (`follow`), so that enough workers are started for the rest.
+    """
     from pymmm.store.experiment_group import segmentation
 
     global _WORKERS
@@ -1892,7 +1928,8 @@ def run(trenches):
 
 def follow(trenches):
     """Track each trench as soon as its segmentation is finished (the Segmenter still running),
-    until every one is tracked."""
+    until every one is tracked.
+    """
     from pymmm.store.experiment_group import has_segmentation
 
     root = open_experiment(STORE, mode="r+")

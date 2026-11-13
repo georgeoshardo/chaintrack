@@ -21,7 +21,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import zarr
-
 from pymmm.store import experiment_group as eg
 
 HERE = Path(__file__).parent
@@ -106,7 +105,7 @@ def test_the_fit_is_the_expected_one(tracked):
 
 
 def test_the_tracks_are_the_expected_ones(tracked):
-    _, meta, _, runs = tracked
+    _, _meta, _, runs = tracked
     expected = np.load(DATA / "expected.npz")
     for trench, run in runs.items():
         for key, value in run.items():
@@ -125,7 +124,7 @@ def test_the_tracks_are_the_expected_ones(tracked):
 
 
 def test_one_trench_at_a_time_gives_the_same_tracks(tracked):
-    store, meta, _, runs = tracked
+    store, _meta, _, runs = tracked
     for trench, run in runs.items():
         one = read_run(store, trench, "one")
         for key, value in run.items():

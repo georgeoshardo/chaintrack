@@ -1,6 +1,7 @@
-"""Score tracking runs against Reviewed curations in an experiment group (curated copies of a run,
-made in mm-track, on the same crops and all frames), tolerant of what a curation cannot or need not
-pin down:
+"""Score tracking runs against the Reviewed curations of an experiment group.
+
+The curations are curated copies of a run, made in mm-track, on the same crops and all
+frames. The score tolerates what a curation cannot or need not pin down:
 
 - Masks are paired per frame by IoU >= 0.65 (a mask over two cells pairs with neither). Only chain
   masks above the bottom are judged: a mask reaching the bottom EDGE rows (cut off by the crop, never
@@ -39,7 +40,6 @@ from collections import Counter, defaultdict
 
 import numpy as np
 import zarr
-
 from pymmm.store.experiment_group import hypotheses, open_experiment, records
 
 if len(sys.argv) < 2 or "--store" not in sys.argv or "--curation" not in sys.argv:
@@ -76,7 +76,7 @@ def graph(path):
     e = np.asarray(g["edges/ids"][:]).reshape(-1, 2)
     e = [(pos[int(a)], pos[int(b)]) for a, b in e]
     extra = dict(g.attrs).get("geff", {}).get("extra", {})
-    return dict(t=t, s=s, e=e, extra=extra)
+    return {"t": t, "s": s, "e": e, "extra": extra}
 
 
 def boxes(seg):
@@ -90,7 +90,7 @@ def boxes(seg):
         order = np.argsort(v, kind="stable")
         v, ys, xs = v[order], ys[order], xs[order]
         ls, first = np.unique(v, return_index=True)
-        bounds = list(first) + [len(v)]
+        bounds = [*list(first), len(v)]
         for k, l in enumerate(ls):
             yy, xx = ys[bounds[k] : bounds[k + 1]], xs[bounds[k] : bounds[k + 1]]
             out[(f, int(l))] = (int(yy.min()), int(yy.max()), len(yy), float(xx.mean()))
@@ -113,7 +113,7 @@ def match(segA, segB):
             if iou >= PAIR_IOU:
                 cand.append((iou, la, lb))
         ua, ub = set(), set()
-        for iou, la, lb in sorted(cand, reverse=True):
+        for _iou, la, lb in sorted(cand, reverse=True):
             if la in ua or lb in ub:
                 continue
             out[(f, la)] = (f, lb)
@@ -152,7 +152,7 @@ class G:
 
 
 def judged(g, k, centre):
-    top, bot, area, col = g.box[k]
+    _top, bot, _area, col = g.box[k]
     return bot < g.H - EDGE and abs(col - centre) <= CENTRE_PX
 
 
@@ -214,7 +214,7 @@ def score(run, cur, centre):
         if not mother:
             continue
         # the division, as the curated masks it lands on: the mother, its parent, its children
-        for x in [k, run.parent.get(k)] + list(run.children.get(k, [])):
+        for x in [k, run.parent.get(k), *list(run.children.get(k, []))]:
             if x is not None and x in m:
                 div_r.add(m[x])
     cur_divs = [k for k in jc if len(kids(cur, k, jc)) == 2]
@@ -329,11 +329,14 @@ if __name__ == "__main__":
             )
             if VERBOSE:
                 for t, kind, pc, pr, b in sorted(ev, key=lambda e: e[0]):
-                    fb = lambda k, g: (
-                        f"t{k[0]} {g.box[k][0]}-{g.box[k][1]}"
-                        if k is not None and k in g.box
-                        else "-"
-                    )
+
+                    def fb(k, g):
+                        return (
+                            f"t{k[0]} {g.box[k][0]}-{g.box[k][1]}"
+                            if k is not None and k in g.box
+                            else "-"
+                        )
+
                     print(
                         f"    t{t:3d} {kind:16s} cur pred {fb(pc, cur)} | run pred {fb(pr, cur)} | at {fb(b, cur) if b in cur.box else fb(b, run)}"
                     )
