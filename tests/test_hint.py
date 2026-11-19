@@ -84,6 +84,8 @@ def store(tmp_path_factory):
     for channel in ("F", "flat"):
         chain("fit", 0, *on, "--recipe", RECIPE, "--fit", channel, "--hint", channel)
         chain("run", 0, *on, "--fit", channel, "--out", channel)
+    chain("fit", 0, *on, "--recipe", RECIPE, "--fit", "wide", "--width")
+    chain("run", 0, *on, "--fit", "wide", "--out", "wide")
     chain("fit", 0, *on, "--recipe", RECIPE, "--fit", "look", "--pattern", "PC")
     chain("run", 0, *on, "--fit", "look", "--out", "look")
     return path
@@ -131,6 +133,14 @@ def test_a_pattern_follows_the_right_cells(store):
     assert tracks(store, "look") == true_links()
     fit = eg.records(eg.open_experiment(store), "fits")["look"]
     assert fit["pattern"]["channels"] == ["PC"] and "hint" not in fit
+
+
+def test_cells_of_one_width_are_tracked_as_without_the_width_check(store):
+    assert tracks(store, "wide") == tracks(store, "plain")
+    assert (
+        "spread"
+        in eg.records(eg.open_experiment(store), "fits")["wide"]["width"]["values"]
+    )
 
 
 def test_a_flat_channel_changes_nothing(store):

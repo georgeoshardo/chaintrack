@@ -148,7 +148,7 @@ def option(flag):
 
 
 USAGE = (
-    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--hint CHANNELS] [--pattern CHANNELS] [--workers N]\n"
+    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--hint CHANNELS] [--pattern CHANNELS] [--width] [--workers N]\n"
     "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]"
 )
 # what to do: fit, run or follow
@@ -192,6 +192,14 @@ if COMMAND != "fit" and PATTERN is not None:
     sys.exit(
         f"chain.py: {COMMAND} takes no --pattern: it uses the channels of the store's fit. For other "
         "channels, fit again under a new name (fit ... --pattern CHANNELS --fit NAME) and track with --fit NAME"
+    )
+# the width check (fit --width): a cell's width is expected to stay as it was, so a mask much
+# narrower or wider than the cell costs more. From the masks alone
+WIDTH = "--width" in sys.argv
+if COMMAND != "fit" and WIDTH:
+    sys.exit(
+        f"chain.py: {COMMAND} takes no --width: it follows the store's fit. To change it, fit again "
+        "under a new name (fit ... --width --fit NAME) and track with --fit NAME"
     )
 if COMMAND != "fit" and HINT is not None:
     sys.exit(
@@ -252,6 +260,8 @@ HINT_KEYS = {
     "background_from_um": ("bg_from", "whole px"),
     "background_to_um": ("bg_to", "whole px"),
 }
+# The recipe's optional [width] table, needed only by a fit with --width
+WIDTH_KEYS = {"p_mismatch": ("p_mismatch", "same")}
 # The recipe's optional [pattern] table, needed only by a fit with --pattern
 PATTERN_KEYS = {
     "p_mismatch": ("p_mismatch", "same"),
@@ -270,7 +280,7 @@ FIT_KEYS = {
 }
 
 
-def check_recipe(constants, start, where, hint=None, pattern=None):
+def check_recipe(constants, start, where, hint=None, pattern=None, width=None):
     """Stop unless a recipe is one this chaintrack can use: every key there, none unknown, each a
     number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
     or None for a recipe that carries none (one frozen in a store). hint: its [hint] table, or
@@ -290,6 +300,7 @@ def check_recipe(constants, start, where, hint=None, pattern=None):
         + ((("fit_start.", start, FIT_KEYS),) if start is not None else ())
         + ((("hint.", hint, HINT_KEYS),) if hint is not None else ())
         + ((("pattern.", pattern, PATTERN_KEYS),) if pattern is not None else ())
+        + ((("width.", width, WIDTH_KEYS),) if width is not None else ())
     ):
         problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
         problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
@@ -311,8 +322,9 @@ def load_recipe(path):
     start = raw.pop("fit_start", {})
     hint = raw.pop("hint", None)
     pattern = raw.pop("pattern", None)
-    check_recipe(raw, start, f"recipe {path}", hint, pattern)
-    return raw, start, hint, pattern
+    width = raw.pop("width", None)
+    check_recipe(raw, start, f"recipe {path}", hint, pattern, width)
+    return raw, start, hint, pattern, width
 
 
 def to_pixels(value, how):
@@ -370,7 +382,14 @@ PX, DT = calibration(open_experiment(STORE))  # µm per pixel, minutes per frame
 # the store's record of the fit: None until `fit` has run on this store
 FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
 if COMMAND == "fit":
-    RECIPE, FIT_START, HINT_RECIPE, PATTERN_RECIPE = load_recipe(RECIPE_FILE)
+    RECIPE, FIT_START, HINT_RECIPE, PATTERN_RECIPE, WIDTH_RECIPE = load_recipe(
+        RECIPE_FILE
+    )
+    if WIDTH and WIDTH_RECIPE is None:
+        sys.exit(
+            f"chain.py: --width needs the recipe's [width] table, and {RECIPE_FILE} has none "
+            "(tests/data/recipe.toml shows one)"
+        )
     if PATTERN is not None and PATTERN_RECIPE is None:
         sys.exit(
             f"chain.py: --pattern needs the recipe's [pattern] table, and {RECIPE_FILE} has none "
@@ -462,6 +481,17 @@ else:
         if _pattern
         else None
     )
+
+# The width check. WIDTHS: whether cells carry their width; WS: the fitted spread of the log
+# change of a cell's width in a frame (None while fitting, when it is only measured) and WP the
+# recipe's cap on what a mismatch costs.
+if COMMAND == "fit":
+    WIDTHS, WS, WP = WIDTH, None, None
+else:
+    _width = FIT_RECORD.get("width")
+    WIDTHS = bool(_width)
+    WS = _width["values"]["spread"] if _width else None
+    WP = _width["recipe"]["p_mismatch"] if _width else None
 
 MOVE = {
     "match": 0,
@@ -695,6 +725,7 @@ class Hyp:
         "top",
         "trunc",
         "unseen",
+        "wid",
     )
 
     def __init__(
@@ -710,7 +741,9 @@ class Hyp:
         rec,
         hint=None,
         pat=None,
+        wid=None,
     ):
+        self.wid = wid  # per cell, its last width (None: no width check)
         self.pat = (
             pat  # per cell, its last image in each pattern channel (None: no patterns)
         )
@@ -1037,6 +1070,7 @@ class Frame:
         "pptr",
         "sidx",
         "sptr",
+        "width",
     )
 
     def __init__(self, base_obs, base_frame, alt_frames, side_labels, centre, H):
@@ -1171,6 +1205,7 @@ class Frame:
         # the pattern channels' images of this frame and the trench's centre column (set by
         # track()), and what has been cut out of them and compared so far
         self.pimg, self.pcache = None, {}
+        self.width = None  # the masks' widths: set by track() for the width check
         # taking another hypothesis's cut of a region is a claim that the base got it wrong
         self.alt_first = np.zeros(M, bool)
         for om in opt_masks:
@@ -1205,6 +1240,55 @@ class Frame:
             ],
             bool,
         )
+
+
+def mask_widths(frame, W):
+    """Each mask's width: the mean number of its pixels per row over the middle half of its rows,
+    so the rounded ends do not count and a short cell is as wide as a long one.
+    """
+    out = np.zeros(len(frame.masks))
+    for j, m in enumerate(frame.masks):
+        per_row = np.bincount(frame.pix[m[2]] // W - m[0], minlength=m[1] - m[0] + 1)
+        n = len(per_row)
+        out[j] = per_row[n // 4 : max(n - n // 4, n // 4 + 1)].mean()
+    return out
+
+
+def width_cost(seen, expected):
+    """What a mask of width `seen` costs a cell whose width was `expected`: nothing when they are
+    the same, half the squared log change over its fitted spread near that, and never more than
+    -log of the recipe's p_mismatch.
+    """
+    z = np.log(np.maximum(seen, 0.5) / np.maximum(expected, 0.5)) / WS
+    return -np.log((1.0 - WP) * np.exp(-0.5 * z * z) + WP)
+
+
+def width_costs(h, frame, grown, sm, sd, so, su, sd1):
+    """The size costs with the width check's added. Each mask pays once against the width of the
+    cell it is given to, a mother's daughters and the two masks of a cell cut in two alike; two
+    cells under one mask pay once, for the mask against their length-weighted mean.
+    """
+    n, m = len(h.ids), len(frame.masks)
+    if not (n and m):
+        return sm, sd, so, su, sd1
+    F = np.asarray(h.wid, float)
+    Y = frame.width
+    one = width_cost(Y[None, :], F[:, None])
+    sm = sm + one
+    if sd1.shape[1] == m:
+        sd1 = sd1 + one
+    pj, pj2 = frame.pj, frame.pj2
+    if len(pj):
+        two = one[:, pj] + one[:, pj2]
+        sd, so = sd.copy(), so.copy()
+        sd[:, : len(pj)] += two
+        so[:, : len(pj)] += two
+    if n >= 2:
+        g = np.asarray(grown, float)
+        mixed = (g[:-1] * F[:-1] + g[1:] * F[1:]) / (g[:-1] + g[1:])
+        su = su.copy()
+        su[: n - 1] += width_cost(Y[None, :], mixed[:, None])
+    return sm, sd, so, su, sd1
 
 
 def pattern_crop(frame, top, bottom):
@@ -1510,6 +1594,8 @@ def costs(h, frame, H, t):
     sm, sd, so, su, underc, otop, obot, sd1 = size_costs(h, frame, grown, t, H)
     if HP is not None and frame.hint is not None:
         sm, sd, so, su, sd1 = hint_costs(h, frame, grown, sm, sd, so, su, sd1)
+    if WS is not None and frame.width is not None:
+        sm, sd, so, su, sd1 = width_costs(h, frame, grown, sm, sd, so, su, sd1)
     if PS is not None and frame.pimg is not None:
         sm, sd, so, su = pattern_costs(h, frame, sm, sd, so, su)
     altc = np.where(frame.alt_first, -np.log(P["p_alt"]), 0.0)
@@ -1581,6 +1667,8 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     hints = frame.hint is not None and h.hint is not None
     pat, matches = [], []
     pats = frame.pimg is not None and h.pat is not None
+    wid, wpairs = [], []
+    wids = frame.width is not None and h.wid is not None
     entries, divisions, lone = [], [], []
     events = {
         "div": 0,
@@ -1609,9 +1697,19 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     def look(j, j2=None):
         return pattern_of(frame, j, j2) if pats else None
 
-    def keep(cid, tp, L, par, b, u, tr, hv, pv=None):
+    def wide(*js):
+        """The width of these masks taken as one cell (area-weighted)."""
+        if not wids:
+            return None
+        if len(js) == 1:
+            return float(frame.width[js[0]])
+        area = np.array([obs[k][5] for k in js], float)
+        return float((area * frame.width[list(js)]).sum() / area.sum())
+
+    def keep(cid, tp, L, par, b, u, tr, hv, pv=None, wv=None):
         hint.append(hv)
         pat.append(pv)
+        wid.append(wv)
         ids.append(cid)
         top.append(float(tp))
         length.append(max(float(L), 1.0))
@@ -1650,7 +1748,10 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 o[3],
                 seen(j),
                 look(j),
+                wide(j),
             )
+            if wids and WS is None and not o[3] and not h.trunc[i]:
+                wpairs.append((h.wid[i], float(frame.width[j])))
             if pats and PS is None:
                 matches.append(pattern_alike(frame, h.pat[i], look(j)))
             entries.append((h.ids[i], "mask", (o[2],)))
@@ -1676,6 +1777,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                     oo[3],
                     seen(jj),
                     look(jj),
+                    wide(jj),
                 )
                 entries.append((c, "mask", (oo[2],)))
                 divisions.append((h.ids[i], c))
@@ -1697,6 +1799,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 b[3],
                 seen(j, j2),
                 look(j, j2),
+                wide(j, j2),
             )
             entries.append((h.ids[i], "union", (a[2], b[2])))
             events["over"] += 1
@@ -1717,6 +1820,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 False,
                 h.hint[i] if hints else None,
                 h.pat[i] if pats else None,
+                h.wid[i] if wids else None,
             )
             entries.append((h.ids[i], "upper", (o[2], cut)))
             L2 = o[1] - cut + 1
@@ -1730,6 +1834,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 o[3],
                 h.hint[i + 1] if hints else None,
                 h.pat[i + 1] if pats else None,
+                h.wid[i + 1] if wids else None,
             )
             entries.append((h.ids[i + 1], "lower", (o[2], cut)))
             events["under"] += 1
@@ -1745,6 +1850,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 h.trunc[i],
                 h.hint[i] if hints else None,
                 h.pat[i] if pats else None,
+                h.wid[i] if wids else None,
             )
             events["miss"] += 1
         elif code == 5:
@@ -1754,14 +1860,25 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         elif code == 7:
             o = obs[j]
             c = new_id()
-            keep(c, o[0], o[1] - o[0] + 1, -1, t, 0, o[3], seen(j), look(j))
+            keep(c, o[0], o[1] - o[0] + 1, -1, t, 0, o[3], seen(j), look(j), wide(j))
             entries.append((c, "mask", (o[2],)))
             events["appear"] += 1
         elif code == 8:
             o = obs[j]
             spacing(i, o[0])
             c = new_id()
-            keep(c, o[0], o[1] - o[0] + 1, h.ids[i], t, 0, False, seen(j), look(j))
+            keep(
+                c,
+                o[0],
+                o[1] - o[0] + 1,
+                h.ids[i],
+                t,
+                0,
+                False,
+                seen(j),
+                look(j),
+                wide(j),
+            )
             entries.append((c, "mask", (o[2],)))
             divisions.append((h.ids[i], c))
             lone.append(c)
@@ -1770,8 +1887,8 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             ref_bot, ref_cell = o[0] + grown[i] - 1, i
     # keep the chain in order (an appeared mask is placed by its position)
     order = np.argsort(top, kind="stable")
-    cols = [ids, top, length, parent, born, unseen, trunc, hint, pat]
-    ids, top, length, parent, born, unseen, trunc, hint, pat = (
+    cols = [ids, top, length, parent, born, unseen, trunc, hint, pat, wid]
+    ids, top, length, parent, born, unseen, trunc, hint, pat, wid = (
         [c[k] for k in order] for c in cols
     )
     rec = (
@@ -1790,6 +1907,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         lone,
         pairs,
         matches,
+        wpairs,
     )
     return Hyp(
         ids,
@@ -1803,6 +1921,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         rec,
         hint if hints else None,
         pat if pats else None,
+        wid if wids else None,
     )
 
 
@@ -1978,6 +2097,9 @@ def track(labs, hint=None, pattern=None):
     if hint:
         for t, frame in enumerate(frames):
             frame.hint = hint_means(frame, [image[t] for image in hint], centre)
+    if WIDTHS:
+        for frame in frames:
+            frame.width = mask_widths(frame, W)
     if pattern:
         for t, frame in enumerate(frames):
             frame.pimg = ([image[t] for image in pattern], round(centre))
@@ -2001,6 +2123,7 @@ def track(labs, hint=None, pattern=None):
         [],
         [],
         [],
+        [],
     )
     hyps = [
         Hyp(
@@ -2016,6 +2139,9 @@ def track(labs, hint=None, pattern=None):
             [frames[first].hint[j] for j in frames[first].base] if hint else None,
             [pattern_of(frames[first], j) for j in frames[first].base]
             if pattern
+            else None,
+            [float(frames[first].width[j]) for j in frames[first].base]
+            if WIDTHS
             else None,
         )
     ]
@@ -2044,6 +2170,7 @@ def stats_of(recs):
         "slide": 0,
     }
     lens, gaps, divlen, growth, jumps, pairs, matches = [], [], [], [], [], [], []
+    wpairs = []
     for r in recs[1:]:
         for k, v in r[4].items():
             tot[k] += v
@@ -2054,7 +2181,8 @@ def stats_of(recs):
         jumps += [g[1] for g in r[8] if isinstance(g, tuple)]
         pairs += r[11]
         matches += r[12]
-    return tot, lens, gaps, divlen, growth, jumps, pairs, matches
+        wpairs += r[13]
+    return tot, lens, gaps, divlen, growth, jumps, pairs, matches, wpairs
 
 
 _POOL = None  # the worker processes, started at the first use
@@ -2250,9 +2378,10 @@ def fit(trenches, rounds=3):
             "slide": 0,
         }
         lens, gaps, divlen, growth, jumps, pairs, matches = [], [], [], [], [], [], []
+        wpairs = []
         start = time.perf_counter()
         # the trenches' statistics are gathered in the trenches' order, however many are tracked at once
-        for a, l, g, d, gr, ju, pa, al in in_parallel(
+        for a, l, g, d, gr, ju, pa, al, wp in in_parallel(
             fit_track, [(lab, dict(P), t) for lab, t in zip(labs, used)], workers
         ):
             for k in tot:
@@ -2264,6 +2393,7 @@ def fit(trenches, rounds=3):
             jumps += ju
             pairs += pa
             matches += al
+            wpairs += wp
         if len(growth) > 100:
             P["growth"] = float(np.median(growth))
         if len(lens) > 100:
@@ -2293,6 +2423,21 @@ def fit(trenches, rounds=3):
             "values": values,
             "checks": checks,
         }
+    # the width check: how much a cell's width changes in a frame, on the last round's tracks
+    width = None
+    if WIDTHS:
+        if len(wpairs) < 100:
+            sys.exit(
+                f"chain.py: only {len(wpairs)} links to measure the widths on: fit on more trenches"
+            )
+        change = np.abs(np.log([b / a for a, b in wpairs if a > 0 and b > 0]))
+        spread = max(float(np.percentile(change, 95)) / 1.645, 1e-3)
+        print(
+            f"width: a cell's width changes by {100 * float(np.median(change)):.1f}% a frame (median), "
+            f"95% under {100 * spread * 1.645:.1f}%; {len(change)} links",
+            flush=True,
+        )
+        width = {"recipe": WIDTH_RECIPE, "values": {"spread": spread}}
     # the patterns too are measured on the last round's tracks: per channel, the spread of
     # (1 - correlation) between a cell's image and its own next one, read off its 95th percentile
     pattern = None
@@ -2330,6 +2475,7 @@ def fit(trenches, rounds=3):
             "values": fitted(),
             **({"hint": hint} if hint else {}),
             **({"pattern": pattern} if pattern else {}),
+            **({"width": width} if width else {}),
             "trenches": used,
             "frames": "all",
             "rounds": rounds,
@@ -2496,6 +2642,7 @@ def record_run(root):
             "fit": fit,
             **({"hint": FIT_RECORD["hint"]} if FIT_RECORD.get("hint") else {}),
             **({"pattern": FIT_RECORD["pattern"]} if FIT_RECORD.get("pattern") else {}),
+            **({"width": FIT_RECORD["width"]} if FIT_RECORD.get("width") else {}),
             "pixel_size_um": PX,
             "frame_interval_min": DT,
             "alternatives": alts,
@@ -2626,6 +2773,7 @@ if __name__ == "__main__":
         ("--alts", 1),
         ("--hint", 1),
         ("--pattern", 1),
+        ("--width", 0),
         ("--base-only", 0),
         ("--workers", 1),
     ):

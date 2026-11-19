@@ -90,3 +90,9 @@ background_to_um = 0.0        # ... each mask's value is then its mean less thei
 [pattern]
 p_mismatch = 0.01             # an image unlike the cell's last one costs at most -log of this
 half_width_um = 0.65          # the images are taken this far either side of the trench's centre line
+
+# --- the width check: only for `fit --width`, ignored otherwise ---------------------------
+# A cell's width is expected to stay as it was, so a mask much narrower or wider than the cell
+# costs more. How much a cell's width changes in a frame is fitted; this is not.
+[width]
+p_mismatch = 0.01             # a mask of the wrong width costs at most -log of this
