@@ -62,8 +62,11 @@ plain spread they were about 0.07 µm in both the 40x and the 100x data chaintra
 Intensity hints (fit --hint A,B; any number of the image's channels): optional, and off unless a
 fit asks for them. Each cell then also carries its mean intensity in each hint channel, and a
 mask whose mean is far from the cell's last value costs more, on top of size and spacing. Each
-cell pays once per frame, for the area-weighted mean of the masks it is given; a division's
-daughters start from their own masks' values, and two cells under one mask keep theirs. The
+mask pays once: a mother's two daughters and the two masks of a cell cut in two are each held
+against the one cell's value, so the hints say nothing about which of those it was, and neither
+is dearer for the number of its terms. A division's daughters start from their own masks'
+values, a cell cut in two keeps the area-weighted mean of its masks, and two cells under one
+mask keep their own. The
 cost is nothing at a perfect match and grows like a jump's far from it, so a sudden change is
 dear, never ruled out. Where the cells of a trench look alike in a channel (a reporter before
 it is made, say), every choice costs the same and the hint decides nothing; it speaks only
@@ -1147,10 +1150,12 @@ def hint_cost(seen, expected, wait=None):
 
 
 def hint_costs(h, frame, grown, sm, sd, so, su, sd1):
-    """The size costs with the hints' added. Each cell pays once, for the area-weighted mean of
-    the masks it is given against its own last value: so a division and a cell cut into two
-    masks cost the same, and the hints say nothing about which it was. Two cells under one mask
-    pay once, for the mask against their length-weighted mean.
+    """The size costs with the hints' added. Each mask pays once, against the last value of the
+    cell it is given to: a mother's daughters and the two masks of a cell cut in two alike, so
+    those two readings cost the same and have the same number of terms (charged once per cell
+    instead, two cells paid a term more per frame than one cell in two masks, and divisions
+    were called late). Two cells under one mask pay once, for the mask against their
+    length-weighted mean.
     """
     n, m = len(h.ids), len(frame.masks)
     if not (n and m):
@@ -1164,9 +1169,9 @@ def hint_costs(h, frame, grown, sm, sd, so, su, sd1):
         sd1 = sd1 + one
     pj, pj2 = frame.pj, frame.pj2
     if len(pj):
-        area = np.array([o[5] for o in frame.masks], float)[:, None]
-        both = (area[pj] * Y[pj] + area[pj2] * Y[pj2]) / (area[pj] + area[pj2])
-        two = hint_cost(both[None, :, :], F[:, None, :], wait)
+        two = hint_cost(Y[pj][None, :, :], F[:, None, :], wait) + hint_cost(
+            Y[pj2][None, :, :], F[:, None, :], wait
+        )
         sd, so = sd.copy(), so.copy()
         sd[:, : len(pj)] += two
         so[:, : len(pj)] += two
