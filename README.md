@@ -49,9 +49,9 @@ them apart, such as a fluorescent reporter, chaintrack can use it:
     python chain.py run 0-99 $S --fit hinted --out chain_hinted
 
 Each cell carries its mean intensity in the hint channels, and a mask much brighter or dimmer
-than the cell was costs more. Give several channels as `--hint mVenus,CFP`. While the cells of
-a trench look alike in a channel, it changes nothing. The fit measures each channel's noise and
-records the channels, so `run` takes no `--hint`. The recipe needs a `[hint]` table for this;
+than the cell was costs more. Give several channels as `--hint mVenus,CFP`. Where the cells of
+a trench look alike in a channel, it has little to say. The fit measures how much a cell's own
+value changes from frame to frame and records the channels, so `run` takes no `--hint`. The recipe needs a `[hint]` table for this;
 `tests/data/recipe.toml` has one.
 
 ## Options

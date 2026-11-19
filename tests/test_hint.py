@@ -127,7 +127,7 @@ def test_a_flat_channel_changes_nothing(store):
 def test_the_fit_records_the_hint_and_a_run_takes_no_hint(store):
     fit = eg.records(eg.open_experiment(store), "fits")["F"]
     assert fit["hint"]["channels"] == ["F"]
-    assert set(fit["hint"]["values"]["F"]) == {"dark", "sigma0", "kappa", "jump_scale"}
+    assert set(fit["hint"]["values"]["F"]) == {"dark", "levels", "sigmas"}
     assert "hint" not in eg.records(eg.open_experiment(store), "fits")["seg"]
     done = subprocess.run(
         [

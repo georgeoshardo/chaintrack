@@ -77,7 +77,8 @@ jump_scale_um = 2.16          # 20 px: typical size of a jump
 
 # --- intensity hints: only for `fit --hint CHANNELS`, ignored otherwise ------------------
 # A cell's mean intensity in each hint channel is expected to stay close to its last value.
-# The noise around that is fitted per channel; these two are not.
+# How much it may change is fitted per channel; these are not.
 [hint]
-p_jump_per_min = 0.005        # a cell's mean intensity changes at once (as its gap does), per minute
-kappa_start = 0.2             # share of the level above dark that is noise, used when a fit has too few bright cells to measure it
+p_jump_per_min = 0.005        # a mask of the wrong brightness costs at most -log of this (over one frame): the price of a jump
+background_from_um = 0.0      # columns read as background, as distances from the trench's centre line, on each side;
+background_to_um = 0.0        # ... each mask's value is then its mean less their median over its rows. 0 and 0: no background

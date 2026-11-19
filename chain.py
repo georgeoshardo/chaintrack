@@ -67,16 +67,19 @@ against the one cell's value, so the hints say nothing about which of those it w
 is dearer for the number of its terms. A division's daughters start from their own masks'
 values, a cell cut in two keeps the area-weighted mean of its masks, and two cells under one
 mask keep their own. The
-cost is nothing at a perfect match and grows like a jump's far from it, so a sudden change is
-dear, never ruled out. Where the cells of a trench look alike in a channel (a reporter before
+cost is nothing at a perfect match and never more than the price of a jump (-log of the recipe's
+p_jump), so a mask of the wrong brightness is dear but cannot outbid a new cell. Where the cells of a trench look alike in a channel (a reporter before
 it is made, say), every choice costs the same and the hint decides nothing; it speaks only
 where neighbours differ, and by how much they differ against the noise. Raw intensities are
 compared with raw intensities of the same trench, so the camera's offset and the background
 cancel. The chances of lysis, division and the other events do not depend on the hints: a
-bright cell is not taken to be likelier to lyse. `fit` measures each channel's noise (a dark
-cell's, and the share of the level above dark) on its own tracks, which are made from the masks
-alone, and records the channels with the fit; a run uses the channels of its fit. The recipe's
-[hint] table holds the two constants that are not fitted.
+bright cell is not taken to be likelier to lyse. `fit` measures each channel's tolerance on its own
+tracks, which are made from the masks alone: at each brightness, the 99th percentile of how much
+a cell's value changes in a frame, up or down alike, so a reporter may rise, fall or oscillate.
+It records the channels and that table with the fit; a run uses the channels of its fit. The
+recipe's [hint] table holds what is not fitted: p_jump, and the columns beside the trench to
+read a background from (off when both distances are 0; with it each mask's value is its mean
+less the median of those columns over its rows in that frame).
 
 The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
@@ -226,7 +229,8 @@ RECIPE_KEYS = {
 # The recipe's optional [hint] table, needed only by a fit with --hint
 HINT_KEYS = {
     "p_jump_per_min": ("p_jump", "per frame"),
-    "kappa_start": ("kappa_start", "same"),
+    "background_from_um": ("bg_from", "whole px"),
+    "background_to_um": ("bg_to", "whole px"),
 }
 # The fitted values, as a store's fit record and the recipe's [fit_start] hold them
 FIT_KEYS = {
@@ -373,21 +377,29 @@ P.update(
     }
 )
 
+
 # Intensity hints. HINT_CHANNELS: the channels a cell's mean intensity is read from (none: masks
 # alone, as without hints). While fitting they are only measured; a run prices them with the
 # fit's values, HP: per channel the dark level, the noise at it, the share of the level above
 # dark that is noise, and the size of a jump; and the chance of a jump per frame.
+def hint_recipe(table):
+    """A [hint] table in pixels and frames."""
+    return {p: to_pixels(table[k], how) for k, (p, how) in HINT_KEYS.items()}
+
+
 if COMMAND == "fit":
     HINT_CHANNELS, HP = list(HINT or []), None
+    HR = hint_recipe(HINT_RECIPE) if HINT_CHANNELS else None
 else:
     _hint = FIT_RECORD.get("hint")
     HINT_CHANNELS = list(_hint["channels"]) if _hint else []
+    HR = hint_recipe(_hint["recipe"]) if _hint else None
     HP = (
         {
-            k: np.array([_hint["values"][c][k] for c in HINT_CHANNELS], float)
-            for k in ("dark", "sigma0", "kappa", "jump_scale")
+            "dark": [_hint["values"][c]["dark"] for c in HINT_CHANNELS],
+            "levels": [np.array(_hint["values"][c]["levels"]) for c in HINT_CHANNELS],
+            "sigmas": [np.array(_hint["values"][c]["sigmas"]) for c in HINT_CHANNELS],
         }
-        | {"p_jump": to_pixels(_hint["recipe"]["p_jump_per_min"], "per frame")}
         if _hint
         else None
     )
@@ -1117,36 +1129,54 @@ class Frame:
         )
 
 
-def hint_means(frame, images):
+def hint_means(frame, images, centre):
     """Each mask's mean intensity in each hint channel, (masks, channels). images: this frame of
-    each channel.
+    each channel. With the recipe's background columns (a band on each side of the trench, between
+    background_from_um and background_to_um from its centre line), each mask's value is its mean
+    less the median of those columns over the mask's own rows in this frame.
     """
-    flat = [np.asarray(im, float).ravel() for im in images]
-    return np.array(
-        [[f[frame.pix[m[2]]].mean() for f in flat] for m in frame.masks], float
-    ).reshape(len(frame.masks), len(flat))
+    out = np.zeros((len(frame.masks), len(images)))
+    lo, hi, c = HR["bg_from"], HR["bg_to"], round(centre)
+    for k, im in enumerate(images):
+        im = np.asarray(im, float)
+        flat = im.ravel()
+        rows = None
+        if hi > lo:
+            band = np.concatenate(
+                [
+                    im[:, max(c - hi, 0) : max(c - lo, 0)],
+                    im[:, c + lo + 1 : c + hi + 1],
+                ],
+                axis=1,
+            )
+            rows = np.median(band, axis=1) if band.shape[1] else None
+        for j, m in enumerate(frame.masks):
+            out[j, k] = flat[frame.pix[m[2]]].mean()
+            if rows is not None:
+                out[j, k] -= np.median(rows[m[0] : m[1] + 1])
+    return out
 
 
 def hint_cost(seen, expected, wait=None):
     """How much a mean intensity `seen` costs a cell that had `expected`, summed over the hint
     channels (the last axis). Nothing at a perfect match, like the size terms; near it, half the
-    squared change over its noise; far from it, the price of a jump plus the change over a jump's
-    size, so a cell whose intensity changed at once is dear, never ruled out. The noise is the
-    fitted noise of a dark cell plus a fitted share of the level above dark (of the brighter of
-    the two values, so a cell that brightens is judged as leniently as one that dims), and grows
-    with the frames a cell went without a mask (`wait`). Every term compares raw intensities of
-    the same trench, so an offset that does not change (the camera's, the background's) cancels.
+    squared change over the tolerance; and never more than the price of a jump (-log p_jump), so
+    a mask of the wrong brightness is dear but one mismatch cannot outbid a new cell or several
+    other events. The tolerance is how much a cell's own value changes in a frame at that
+    brightness, up or down alike (the fit's table, read at the brighter of the two values), and
+    it grows with the frames a cell went without a mask (`wait`).
     """
-    r = seen - expected
-    level = np.maximum(np.maximum(seen, expected) - HP["dark"], 0.0)
-    sig = np.sqrt(HP["sigma0"] ** 2 + (HP["kappa"] * level) ** 2)
-    if wait is not None:
-        sig = sig * np.sqrt(1.0 + wait)
-    p = HP["p_jump"]
-    like = (1.0 - p) * np.exp(-0.5 * (r / sig) ** 2) + p * np.exp(
-        -np.abs(r) / HP["jump_scale"]
-    )
-    return -np.log(np.maximum(like, 1e-300)).sum(-1)
+    p = HR["p_jump"]
+    total = 0.0
+    for k in range(len(HINT_CHANNELS)):
+        a, b = seen[..., k], expected[..., k]
+        sig = np.interp(
+            np.maximum(a, b) - HP["dark"][k], HP["levels"][k], HP["sigmas"][k]
+        )
+        if wait is not None:
+            sig = sig * np.sqrt(1.0 + wait[..., 0])
+        total = total - np.log((1.0 - p) * np.exp(-0.5 * ((a - b) / sig) ** 2) + p)
+    return total
 
 
 def hint_costs(h, frame, grown, sm, sd, so, su, sd1):
@@ -1740,7 +1770,7 @@ def track(labs, hint=None):
     ]
     if hint:
         for t, frame in enumerate(frames):
-            frame.hint = hint_means(frame, [image[t] for image in hint])
+            frame.hint = hint_means(frame, [image[t] for image in hint], centre)
     new_id = Counter()
     first = next((t for t in range(T) if obs[t]), None)
     if first is None:
@@ -1885,60 +1915,48 @@ def fit_track(task):
 
 
 def fit_hints(pairs):
-    """The hints' noise, measured on a cell's mean intensity before and after each plain link of
-    the fit's own tracks (made from the masks alone, so the hints are judged by tracks they had
-    no part in). Per channel: the dark level (the 10th percentile of the cells' values), the
-    noise of the dimmest third of the cells, the share of the level above dark that is noise
-    (the median change over the level, among the cells well above dark; the recipe's kappa_start
-    when there are too few of those) and the size of a jump (the mean change among those over 4
-    of the noise). The spread of the changes over their noise is given for dim and bright cells:
-    both should be near 1, so that a cell that is brightening is not charged for it every frame.
+    """The hints' tolerance, measured on a cell's mean intensity before and after each plain link
+    of the fit's own tracks (made from the masks alone, so the hints are judged by tracks they had
+    no part in). Per channel: the dark level (the 10th percentile of the cells' values) and a
+    table of the tolerance against the level above dark. The tolerance at a level is the 99th
+    percentile of the size of the change there, up or down alike, read as 2.576 standard
+    deviations: wide enough for what a cell's own value does in a frame, whatever its direction,
+    so only a difference beyond that counts against a link. It never falls as the level rises.
     """
-
-    def mad(v):
-        return 1.4826 * float(np.median(np.abs(v - np.median(v))))
-
     before = np.array([a for a, _ in pairs], float).reshape(len(pairs), -1)
     after = np.array([b for _, b in pairs], float).reshape(len(pairs), -1)
     values, checks = {}, {}
     for k, channel in enumerate(HINT_CHANNELS):
         f, y = before[:, k], after[:, k]
-        r = y - f
+        r = np.abs(y - f)
         dark = float(np.percentile(f, 10))
-        dim = f <= np.percentile(f, 33)
-        sigma0 = max(mad(r[dim]), 1e-3 * (abs(dark) + 1.0))
         level = np.maximum(f, y) - dark
-        bright = level > 10 * sigma0
-        fitted_kappa = int(bright.sum()) >= 200
-        kappa = (
-            1.4826 * float(np.median(np.abs(r[bright]) / level[bright]))
-            if fitted_kappa
-            else float(HINT_RECIPE["kappa_start"])
+        edges = np.unique(
+            np.percentile(
+                level, [0, 20, 40, 60, 70, 80, 85, 90, 93, 95, 97, 98, 99, 99.5, 100]
+            )
         )
-        z = r / np.sqrt(sigma0**2 + (kappa * np.maximum(level, 0.0)) ** 2)
-        far = np.abs(z) > 4
-        jump_scale = float(np.abs(r[far]).mean()) if far.sum() >= 20 else 10 * sigma0
-        values[channel] = {
-            "dark": dark,
-            "sigma0": sigma0,
-            "kappa": kappa,
-            "jump_scale": jump_scale,
-        }
-        checks[channel] = {
-            "links": len(r),
-            "bright_links": int(bright.sum()),
-            "kappa_fitted": fitted_kappa,
-            "spread_dim": mad(z[~bright]) if (~bright).any() else None,
-            "spread_bright": mad(z[bright]) if bright.any() else None,
-            "jumps": int(far.sum()),
-        }
-        c = checks[channel]
+        levels, sigmas, counts = [], [], []
+        for lo, hi in itertools.pairwise(edges):
+            inside = (level >= lo) & ((level < hi) | (hi == edges[-1]))
+            if inside.sum() >= 100:
+                levels.append(float(np.median(level[inside])))
+                sigmas.append(float(np.percentile(r[inside], 99)) / 2.576)
+                counts.append(int(inside.sum()))
+        if not levels:
+            levels, sigmas, counts = (
+                [0.0],
+                [float(np.percentile(r, 99)) / 2.576],
+                [len(r)],
+            )
+        floor = 1e-3 * (abs(dark) + 1.0)
+        sigmas = np.maximum.accumulate(np.maximum(sigmas, floor)).tolist()
+        values[channel] = {"dark": dark, "levels": levels, "sigmas": sigmas}
+        checks[channel] = {"links": len(r), "links_per_level": counts}
         print(
-            f"hint {channel}: dark {dark:.1f}, noise {sigma0:.2f} + {kappa:.3f} of the level above dark"
-            f"{'' if fitted_kappa else ' (the recipe value: too few bright cells to measure it)'}, "
-            f"jump size {jump_scale:.1f}; {c['links']} links, {c['bright_links']} bright; change over noise "
-            f"spreads {c['spread_dim'] if c['spread_dim'] is None else round(c['spread_dim'], 2)} (dim) and "
-            f"{c['spread_bright'] if c['spread_bright'] is None else round(c['spread_bright'], 2)} (bright)",
+            f"hint {channel}: dark {dark:.1f}; tolerance by level above dark: "
+            + ", ".join(f"{lv:.0f}: {sg:.2f}" for lv, sg in zip(levels, sigmas))
+            + f"; {len(r)} links",
             flush=True,
         )
     return values, checks
