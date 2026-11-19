@@ -2014,9 +2014,16 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     # keep the chain in order (an appeared mask is placed by its position), the cells away last,
     # nearest first, and no more of those than the recipe allows
     if RE:
-        order = np.lexsort((np.asarray(top), np.asarray(away) > 0))
-        n_in = sum(1 for k in away if k == 0)
-        order = order[: n_in + RE["max_away_cells"]]
+        # the cells away come after those in view, the one that left last first (it is the nearest:
+        # cells leave from the bottom), and each starts no higher than the end of the cell before
+        # it, so that a cell away is never placed among the cells in view
+        aw = np.asarray(away)
+        order = np.lexsort((np.asarray(top), aw, aw > 0))
+        order = order[: int((aw == 0).sum()) + RE["max_away_cells"]]
+        for k in range(1, len(order)):
+            if away[order[k]] > 0:
+                floor = top[order[k - 1]] + length[order[k - 1]]
+                top[order[k]] = max(top[order[k]], floor)
     else:
         order = np.argsort(top, kind="stable")
     cols = [ids, top, length, parent, born, unseen, trunc, hint, pat, wid, away]
