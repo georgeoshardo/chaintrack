@@ -74,3 +74,10 @@ sigma_end_um = 0.108          # 1 px: noise of each end of a mask
 div_um = 6.21                 # 57.6 px: length at division
 div_sd_um = 0.66              # 6.1 px
 jump_scale_um = 2.16          # 20 px: typical size of a jump
+
+# --- intensity hints: only for `fit --hint CHANNELS`, ignored otherwise ------------------
+# A cell's mean intensity in each hint channel is expected to stay close to its last value.
+# The noise around that is fitted per channel; these two are not.
+[hint]
+p_jump_per_min = 0.005        # a cell's mean intensity changes at once (as its gap does), per minute
+kappa_start = 0.2             # share of the level above dark that is noise, used when a fit has too few bright cells to measure it

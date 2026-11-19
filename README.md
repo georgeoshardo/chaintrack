@@ -2,8 +2,9 @@
 
 chaintrack tracks the cells of a mother-machine trench as an ordered chain. It judges each cell
 by its size and spacing and keeps a beam of lineage histories.[^jug] It works from segmentation
-masks alone, with no image, and fits its rates to each experiment without labels. The docstring
-at the top of `chain.py` describes the model.
+masks alone and fits its rates to each experiment without labels. It can also take a hint from
+the image: the brightness of each cell in one or more channels. The docstring at the top of
+`chain.py` describes the model.
 
 ## What it needs
 
@@ -39,6 +40,20 @@ constants, fit again under another name and track with it:
     python chain.py fit 0-7 $S --recipe other.toml --fit other
     python chain.py run 0-99 $S --fit other --out chain_other
 
+## Intensity hints
+
+Cells of similar length are easy to mix up when part of the column moves. If a channel tells
+them apart, such as a fluorescent reporter, chaintrack can use it:
+
+    python chain.py fit 0-7 $S --recipe tests/data/recipe.toml --fit hinted --hint mVenus
+    python chain.py run 0-99 $S --fit hinted --out chain_hinted
+
+Each cell carries its mean intensity in the hint channels, and a mask much brighter or dimmer
+than the cell was costs more. Give several channels as `--hint mVenus,CFP`. While the cells of
+a trench look alike in a channel, it changes nothing. The fit measures each channel's noise and
+records the channels, so `run` takes no `--hint`. The recipe needs a `[hint]` table for this;
+`tests/data/recipe.toml` has one.
+
 ## Options
 
 | | |
@@ -47,6 +62,7 @@ constants, fit again under another name and track with it:
 | `--seg` | the segmentation to track: its first hypothesis, with the others as alternatives |
 | `--recipe` | the recipe file (`fit` only) |
 | `--fit` | the fit's name in the store (default: the segmentation's name) |
+| `--hint a,b` | image channels to take intensity hints from (`fit` only) |
 | `--out` | the run's name (default: `chain`) |
 | `--alts a,b` | use only these hypotheses as alternatives; `--base-only` uses none |
 | `--workers` | trenches tracked at once (default: as many as fit in the free memory) |

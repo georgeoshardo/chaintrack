@@ -59,6 +59,22 @@ it is the recipe's sigma_gap_um. Gap changes are whole pixels and more than half
 so the robust spread the fit uses reads them as no noise at all, at any magnification; as a
 plain spread they were about 0.07 µm in both the 40x and the 100x data chaintrack was built on.
 
+Intensity hints (fit --hint A,B; any number of the image's channels): optional, and off unless a
+fit asks for them. Each cell then also carries its mean intensity in each hint channel, and a
+mask whose mean is far from the cell's last value costs more, on top of size and spacing. Each
+cell pays once per frame, for the area-weighted mean of the masks it is given; a division's
+daughters start from their own masks' values, and two cells under one mask keep theirs. The
+cost is nothing at a perfect match and grows like a jump's far from it, so a sudden change is
+dear, never ruled out. Where the cells of a trench look alike in a channel (a reporter before
+it is made, say), every choice costs the same and the hint decides nothing; it speaks only
+where neighbours differ, and by how much they differ against the noise. Raw intensities are
+compared with raw intensities of the same trench, so the camera's offset and the background
+cancel. The chances of lysis, division and the other events do not depend on the hints: a
+bright cell is not taken to be likelier to lyse. `fit` measures each channel's noise (a dark
+cell's, and the share of the level above dark) on its own tracks, which are made from the masks
+alone, and records the channels with the fit; a run uses the channels of its fit. The recipe's
+[hint] table holds the two constants that are not fitted.
+
 The masks come from the experiment group PyMMM extracts (--store PATH: one OME-Zarr image per trench,
 <experiment>.zarr; see pymmm.store.experiment_group): a trench's segmentation <seg> is its label image
 labels/<seg>.<hypothesis>, one (t, y, x) label image per hypothesis, the base first. `run` writes each trench's tracks
@@ -78,6 +94,8 @@ depend on how many are tracked at once.
     python chain.py run 0-99 $S
     python chain.py follow 0-99 $S --out chain_live
     python chain.py run 0-9 $S --base-only --out chain_base
+    python chain.py fit 0-7 $S --recipe tests/data/recipe.toml --fit hinted --hint mVenus
+    python chain.py run 0-99 $S --fit hinted --out chain_hinted
 
 A run with other constants (a wider beam, clear_bottom_um, the open-end switches off) needs a fit
 made with another recipe file:
@@ -112,7 +130,7 @@ def option(flag):
 
 
 USAGE = (
-    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--workers N]\n"
+    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--hint CHANNELS] [--workers N]\n"
     "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]"
 )
 # what to do: fit, run or follow
@@ -146,6 +164,14 @@ FIT = option("--fit") or SEG
 ALTS = option("--alts").split(",") if "--alts" in sys.argv else None
 BASE_ONLY = "--base-only" in sys.argv
 OUT = option("--out") or TRACKER
+# intensity hints (fit --hint A,B): channels of the trench image whose mean inside a mask each cell
+# carries from frame to frame. Only `fit` takes the option; a run uses the channels of its fit
+HINT = option("--hint").split(",") if "--hint" in sys.argv else None
+if COMMAND != "fit" and HINT is not None:
+    sys.exit(
+        f"chain.py: {COMMAND} takes no --hint: it uses the channels of the store's fit. For other "
+        "channels, fit again under a new name (fit ... --hint CHANNELS --fit NAME) and track with --fit NAME"
+    )
 # how many trenches to track at once (--workers N); unset, as many as the cores and the free memory allow
 WORKERS = option("--workers")
 if WORKERS is not None and not (WORKERS.isdigit() and int(WORKERS) >= 1):
@@ -194,6 +220,11 @@ RECIPE_KEYS = {
     "side_alt_piece": ("side_alt_piece", "flag"),
     "side_window_um": ("side_window_px", "whole px"),
 }
+# The recipe's optional [hint] table, needed only by a fit with --hint
+HINT_KEYS = {
+    "p_jump_per_min": ("p_jump", "per frame"),
+    "kappa_start": ("kappa_start", "same"),
+}
 # The fitted values, as a store's fit record and the recipe's [fit_start] hold them
 FIT_KEYS = {
     "growth_per_min": ("growth", "log per frame"),  # log length per frame
@@ -207,10 +238,11 @@ FIT_KEYS = {
 }
 
 
-def check_recipe(constants, start, where):
+def check_recipe(constants, start, where, hint=None):
     """Stop unless a recipe is one this chaintrack can use: every key there, none unknown, each a
     number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
-    or None for a recipe that carries none (one frozen in a store).
+    or None for a recipe that carries none (one frozen in a store). hint: its [hint] table, or
+    None for a recipe without one.
     """
 
     def number(v):
@@ -221,8 +253,10 @@ def check_recipe(constants, start, where):
         "count": lambda v: isinstance(v, int) and not isinstance(v, bool),
     }
     problems = []
-    for prefix, table, keys in (("", constants, RECIPE_KEYS),) + (
-        (("fit_start.", start, FIT_KEYS),) if start is not None else ()
+    for prefix, table, keys in (
+        (("", constants, RECIPE_KEYS),)
+        + ((("fit_start.", start, FIT_KEYS),) if start is not None else ())
+        + ((("hint.", hint, HINT_KEYS),) if hint is not None else ())
     ):
         problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
         problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
@@ -236,12 +270,15 @@ def check_recipe(constants, start, where):
 
 
 def load_recipe(path):
-    """The recipe file's constants and its [fit_start] values, checked."""
+    """The recipe file's constants, its [fit_start] values and its [hint] table (None without
+    one), checked.
+    """
     with open(path, "rb") as file:
         raw = tomllib.load(file)
     start = raw.pop("fit_start", {})
-    check_recipe(raw, start, f"recipe {path}")
-    return raw, start
+    hint = raw.pop("hint", None)
+    check_recipe(raw, start, f"recipe {path}", hint)
+    return raw, start, hint
 
 
 def to_pixels(value, how):
@@ -299,7 +336,12 @@ PX, DT = calibration(open_experiment(STORE))  # µm per pixel, minutes per frame
 # the store's record of the fit: None until `fit` has run on this store
 FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
 if COMMAND == "fit":
-    RECIPE, FIT_START = load_recipe(RECIPE_FILE)
+    RECIPE, FIT_START, HINT_RECIPE = load_recipe(RECIPE_FILE)
+    if HINT is not None and HINT_RECIPE is None:
+        sys.exit(
+            f"chain.py: --hint needs the recipe's [hint] table, and {RECIPE_FILE} has none "
+            "(tests/data/recipe.toml shows one)"
+        )
 else:
     # tracking needs the store's own fit, and uses the recipe frozen in it, never a file
     if FIT_RECORD is None:
@@ -327,6 +369,25 @@ P.update(
         for k, (p, how) in FIT_KEYS.items()
     }
 )
+
+# Intensity hints. HINT_CHANNELS: the channels a cell's mean intensity is read from (none: masks
+# alone, as without hints). While fitting they are only measured; a run prices them with the
+# fit's values, HP: per channel the dark level, the noise at it, the share of the level above
+# dark that is noise, and the size of a jump; and the chance of a jump per frame.
+if COMMAND == "fit":
+    HINT_CHANNELS, HP = list(HINT or []), None
+else:
+    _hint = FIT_RECORD.get("hint")
+    HINT_CHANNELS = list(_hint["channels"]) if _hint else []
+    HP = (
+        {
+            k: np.array([_hint["values"][c][k] for c in HINT_CHANNELS], float)
+            for k in ("dark", "sigma0", "kappa", "jump_scale")
+        }
+        | {"p_jump": to_pixels(_hint["recipe"]["p_jump_per_min"], "per frame")}
+        if _hint
+        else None
+    )
 
 MOVE = {
     "match": 0,
@@ -550,6 +611,7 @@ def align(
 class Hyp:
     __slots__ = (
         "born",
+        "hint",
         "ids",
         "length",
         "parent",
@@ -560,8 +622,11 @@ class Hyp:
         "unseen",
     )
 
-    def __init__(self, ids, top, length, parent, born, unseen, trunc, score, rec):
+    def __init__(
+        self, ids, top, length, parent, born, unseen, trunc, score, rec, hint=None
+    ):
         self.ids, self.top, self.length, self.parent = ids, top, length, parent
+        self.hint = hint  # per cell, its last mean intensity in each hint channel (None: no hints)
         self.born, self.unseen, self.trunc, self.score, self.rec = (
             born,
             unseen,
@@ -872,6 +937,7 @@ class Frame:
         "alt_first",
         "base",
         "end_ok",
+        "hint",
         "masks",
         "no_div",
         "pix",
@@ -1009,6 +1075,9 @@ class Frame:
                         end_ok[j + 1] = tail[r + 1]
         pairs = [(j, j2) for j in range(M) for j2 in succ[j + 1]]
         self.masks, self.pix, self.end_ok = masks, pix, end_ok
+        self.hint = (
+            None  # the masks' mean intensities, (masks, channels): set by track()
+        )
         # taking another hypothesis's cut of a region is a claim that the base got it wrong
         self.alt_first = np.zeros(M, bool)
         for om in opt_masks:
@@ -1043,6 +1112,72 @@ class Frame:
             ],
             bool,
         )
+
+
+def hint_means(frame, images):
+    """Each mask's mean intensity in each hint channel, (masks, channels). images: this frame of
+    each channel.
+    """
+    flat = [np.asarray(im, float).ravel() for im in images]
+    return np.array(
+        [[f[frame.pix[m[2]]].mean() for f in flat] for m in frame.masks], float
+    ).reshape(len(frame.masks), len(flat))
+
+
+def hint_cost(seen, expected, wait=None):
+    """How much a mean intensity `seen` costs a cell that had `expected`, summed over the hint
+    channels (the last axis). Nothing at a perfect match, like the size terms; near it, half the
+    squared change over its noise; far from it, the price of a jump plus the change over a jump's
+    size, so a cell whose intensity changed at once is dear, never ruled out. The noise is the
+    fitted noise of a dark cell plus a fitted share of the level above dark (of the brighter of
+    the two values, so a cell that brightens is judged as leniently as one that dims), and grows
+    with the frames a cell went without a mask (`wait`). Every term compares raw intensities of
+    the same trench, so an offset that does not change (the camera's, the background's) cancels.
+    """
+    r = seen - expected
+    level = np.maximum(np.maximum(seen, expected) - HP["dark"], 0.0)
+    sig = np.sqrt(HP["sigma0"] ** 2 + (HP["kappa"] * level) ** 2)
+    if wait is not None:
+        sig = sig * np.sqrt(1.0 + wait)
+    p = HP["p_jump"]
+    like = (1.0 - p) * np.exp(-0.5 * (r / sig) ** 2) + p * np.exp(
+        -np.abs(r) / HP["jump_scale"]
+    )
+    return -np.log(np.maximum(like, 1e-300)).sum(-1)
+
+
+def hint_costs(h, frame, grown, sm, sd, so, su, sd1):
+    """The size costs with the hints' added. Each cell pays once, for the area-weighted mean of
+    the masks it is given against its own last value: so a division and a cell cut into two
+    masks cost the same, and the hints say nothing about which it was. Two cells under one mask
+    pay once, for the mask against their length-weighted mean.
+    """
+    n, m = len(h.ids), len(frame.masks)
+    if not (n and m):
+        return sm, sd, so, su, sd1
+    F = np.asarray(h.hint, float)  # cells x channels
+    Y = frame.hint  # masks x channels
+    wait = np.asarray(h.unseen, float)[:, None, None]
+    one = hint_cost(Y[None, :, :], F[:, None, :], wait)
+    sm = sm + one
+    if sd1.shape[1] == m:
+        sd1 = sd1 + one
+    pj, pj2 = frame.pj, frame.pj2
+    if len(pj):
+        area = np.array([o[5] for o in frame.masks], float)[:, None]
+        both = (area[pj] * Y[pj] + area[pj2] * Y[pj2]) / (area[pj] + area[pj2])
+        two = hint_cost(both[None, :, :], F[:, None, :], wait)
+        sd, so = sd.copy(), so.copy()
+        sd[:, : len(pj)] += two
+        so[:, : len(pj)] += two
+    if n >= 2:
+        g = np.asarray(grown, float)[:, None]
+        mixed = (g[:-1] * F[:-1] + g[1:] * F[1:]) / (g[:-1] + g[1:])
+        su = su.copy()
+        su[: n - 1] += hint_cost(
+            Y[None, :, :], mixed[:, None, :], np.maximum(wait[:-1], wait[1:])
+        )
+    return sm, sd, so, su, sd1
 
 
 def hazards(length, grown, trunc):
@@ -1149,6 +1284,8 @@ def size_costs(h, frame, grown, t, H):
 def costs(h, frame, H, t):
     ptop, grown = predict(h)
     sm, sd, so, su, underc, otop, obot, sd1 = size_costs(h, frame, grown, t, H)
+    if HP is not None and frame.hint is not None:
+        sm, sd, so, su, sd1 = hint_costs(h, frame, grown, sm, sd, so, su, sd1)
     altc = np.where(frame.alt_first, -np.log(P["p_alt"]), 0.0)
     sm = sm + altc[None, :]
     if sd1.shape[1] == len(altc):
@@ -1214,6 +1351,8 @@ def costs(h, frame, H, t):
 def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     obs = frame.masks
     ids, top, length, parent, born, unseen, trunc = [], [], [], [], [], [], []
+    hint, pairs = [], []
+    hints = frame.hint is not None and h.hint is not None
     entries, divisions, lone = [], [], []
     events = {
         "div": 0,
@@ -1230,7 +1369,17 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
     ref_bot, ref_cell = None, None  # mask bottom and cell of the last cell with a mask
 
-    def keep(cid, tp, L, par, b, u, tr):
+    def seen(*js):
+        """The mean intensity over these masks (area-weighted), per hint channel."""
+        if not hints:
+            return None
+        if len(js) == 1:
+            return frame.hint[js[0]]
+        area = np.array([obs[k][5] for k in js], float)[:, None]
+        return (area * frame.hint[list(js)]).sum(0) / area.sum()
+
+    def keep(cid, tp, L, par, b, u, tr, hv):
+        hint.append(hv)
         ids.append(cid)
         top.append(float(tp))
         length.append(max(float(L), 1.0))
@@ -1267,15 +1416,19 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 h.born[i],
                 0,
                 o[3],
+                seen(j),
             )
             entries.append((h.ids[i], "mask", (o[2],)))
+            if hints and HP is None:
+                pairs.append((h.hint[i], frame.hint[j]))
             if not o[3] and not h.trunc[i]:
                 lens.append(L - grown[i])
                 growth.append(np.log(L / h.length[i]))
             ref_bot, ref_cell = o[1], i
         elif code == 1:
             spacing(i, obs[j][0])
-            for oo in (obs[j], obs[j2]):
+            for jj in (j, j2):
+                oo = obs[jj]
                 c = new_id()
                 L = oo[1] - oo[0] + 1
                 keep(
@@ -1286,6 +1439,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                     t,
                     0,
                     oo[3],
+                    seen(jj),
                 )
                 entries.append((c, "mask", (oo[2],)))
                 divisions.append((h.ids[i], c))
@@ -1305,6 +1459,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 h.born[i],
                 0,
                 b[3],
+                seen(j, j2),
             )
             entries.append((h.ids[i], "union", (a[2], b[2])))
             events["over"] += 1
@@ -1314,7 +1469,17 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             spacing(i, o[0])
             frac = grown[i] / (grown[i] + grown[i + 1])
             cut = round(o[0] + frac * (o[1] - o[0] + 1))
-            keep(h.ids[i], o[0], cut - o[0], h.parent[i], h.born[i], 0, False)
+            # under one mask the two cells keep their own hint values: the mask shows only their mixture
+            keep(
+                h.ids[i],
+                o[0],
+                cut - o[0],
+                h.parent[i],
+                h.born[i],
+                0,
+                False,
+                h.hint[i] if hints else None,
+            )
             entries.append((h.ids[i], "upper", (o[2], cut)))
             L2 = o[1] - cut + 1
             keep(
@@ -1325,6 +1490,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 h.born[i + 1],
                 0,
                 o[3],
+                h.hint[i + 1] if hints else None,
             )
             entries.append((h.ids[i + 1], "lower", (o[2], cut)))
             events["under"] += 1
@@ -1338,6 +1504,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
                 h.born[i],
                 h.unseen[i] + 1,
                 h.trunc[i],
+                h.hint[i] if hints else None,
             )
             events["miss"] += 1
         elif code == 5:
@@ -1347,14 +1514,14 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         elif code == 7:
             o = obs[j]
             c = new_id()
-            keep(c, o[0], o[1] - o[0] + 1, -1, t, 0, o[3])
+            keep(c, o[0], o[1] - o[0] + 1, -1, t, 0, o[3], seen(j))
             entries.append((c, "mask", (o[2],)))
             events["appear"] += 1
         elif code == 8:
             o = obs[j]
             spacing(i, o[0])
             c = new_id()
-            keep(c, o[0], o[1] - o[0] + 1, h.ids[i], t, 0, False)
+            keep(c, o[0], o[1] - o[0] + 1, h.ids[i], t, 0, False, seen(j))
             entries.append((c, "mask", (o[2],)))
             divisions.append((h.ids[i], c))
             lone.append(c)
@@ -1363,8 +1530,8 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             ref_bot, ref_cell = o[0] + grown[i] - 1, i
     # keep the chain in order (an appeared mask is placed by its position)
     order = np.argsort(top, kind="stable")
-    cols = [ids, top, length, parent, born, unseen, trunc]
-    ids, top, length, parent, born, unseen, trunc = (
+    cols = [ids, top, length, parent, born, unseen, trunc, hint]
+    ids, top, length, parent, born, unseen, trunc, hint = (
         [c[k] for k in order] for c in cols
     )
     rec = (
@@ -1381,8 +1548,20 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         if P.get("debug")
         else None,
         lone,
+        pairs,
     )
-    return Hyp(ids, top, length, parent, born, unseen, trunc, h.score + cost, rec)
+    return Hyp(
+        ids,
+        top,
+        length,
+        parent,
+        born,
+        unseen,
+        trunc,
+        h.score + cost,
+        rec,
+        hint if hints else None,
+    )
 
 
 DEBUG_ARGS = {}
@@ -1539,9 +1718,10 @@ class Compressed:
         return frame.reshape(self.shape[1:])
 
 
-def track(labs):
+def track(labs, hint=None):
     """labs: cleaned label stacks, the base hypothesis first (a plain array), then any
-    alternatives (anything that gives a frame as stack[t], such as Compressed).
+    alternatives (anything that gives a frame as stack[t], such as Compressed). hint: one
+    (t, y, x) image per hint channel, of the labels' shape, or None to track on the masks alone.
     """
     lab = labs[0]
     T, _, W = lab.shape
@@ -1553,6 +1733,9 @@ def track(labs):
         Frame(obs[t], lab[t], [l[t] for l in labs[1:]], side_labels[t], centre, H)
         for t in range(T)
     ]
+    if hint:
+        for t, frame in enumerate(frames):
+            frame.hint = hint_means(frame, [image[t] for image in hint])
     new_id = Counter()
     first = next((t for t in range(T) if obs[t]), None)
     if first is None:
@@ -1571,6 +1754,7 @@ def track(labs):
         [],
         None,
         [],
+        [],
     )
     hyps = [
         Hyp(
@@ -1583,6 +1767,7 @@ def track(labs):
             [o[3] for o in o0],
             0.0,
             rec,
+            [frames[first].hint[j] for j in frames[first].base] if hint else None,
         )
     ]
     for t in range(first + 1, T):
@@ -1608,7 +1793,7 @@ def stats_of(recs):
         "jump": 0,
         "slide": 0,
     }
-    lens, gaps, divlen, growth, jumps = [], [], [], [], []
+    lens, gaps, divlen, growth, jumps, pairs = [], [], [], [], [], []
     for r in recs[1:]:
         for k, v in r[4].items():
             tot[k] += v
@@ -1617,7 +1802,8 @@ def stats_of(recs):
         divlen += r[7]
         growth += [g for g in r[8] if not isinstance(g, tuple)]
         jumps += [g[1] for g in r[8] if isinstance(g, tuple)]
-    return tot, lens, gaps, divlen, growth, jumps
+        pairs += r[11]
+    return tot, lens, gaps, divlen, growth, jumps, pairs
 
 
 _POOL = None  # the worker processes, started at the first use
@@ -1668,11 +1854,89 @@ def in_parallel(function, tasks, workers):
     return _POOL.map(function, tasks)
 
 
+def hint_images(root, tid, shape):
+    """A trench's hint channels, one (t, y, x) image each; None when tracking on the masks alone."""
+    if not HINT_CHANNELS:
+        return None
+    from pymmm.store.experiment_group import channel_index, image
+
+    pixels = image(root, tid)
+    out = [np.asarray(pixels[:, channel_index(root, c)]) for c in HINT_CHANNELS]
+    for c, im in zip(HINT_CHANNELS, out):
+        if im.shape != tuple(shape):
+            raise ValueError(
+                f"trench {tid}: channel {c} is {im.shape}, its masks {tuple(shape)}"
+            )
+    return out
+
+
 def fit_track(task):
     """One trench's statistics for a round of the fit, tracked with that round's parameters."""
-    lab, parameters = task
+    lab, parameters, tid = task
     P.update(parameters)
-    return stats_of(track([lab])[0])
+    return stats_of(
+        track([lab], hint_images(open_experiment(STORE), tid, lab.shape))[0]
+    )
+
+
+def fit_hints(pairs):
+    """The hints' noise, measured on a cell's mean intensity before and after each plain link of
+    the fit's own tracks (made from the masks alone, so the hints are judged by tracks they had
+    no part in). Per channel: the dark level (the 10th percentile of the cells' values), the
+    noise of the dimmest third of the cells, the share of the level above dark that is noise
+    (the median change over the level, among the cells well above dark; the recipe's kappa_start
+    when there are too few of those) and the size of a jump (the mean change among those over 4
+    of the noise). The spread of the changes over their noise is given for dim and bright cells:
+    both should be near 1, so that a cell that is brightening is not charged for it every frame.
+    """
+
+    def mad(v):
+        return 1.4826 * float(np.median(np.abs(v - np.median(v))))
+
+    before = np.array([a for a, _ in pairs], float).reshape(len(pairs), -1)
+    after = np.array([b for _, b in pairs], float).reshape(len(pairs), -1)
+    values, checks = {}, {}
+    for k, channel in enumerate(HINT_CHANNELS):
+        f, y = before[:, k], after[:, k]
+        r = y - f
+        dark = float(np.percentile(f, 10))
+        dim = f <= np.percentile(f, 33)
+        sigma0 = max(mad(r[dim]), 1e-3 * (abs(dark) + 1.0))
+        level = np.maximum(f, y) - dark
+        bright = level > 10 * sigma0
+        fitted_kappa = int(bright.sum()) >= 200
+        kappa = (
+            1.4826 * float(np.median(np.abs(r[bright]) / level[bright]))
+            if fitted_kappa
+            else float(HINT_RECIPE["kappa_start"])
+        )
+        z = r / np.sqrt(sigma0**2 + (kappa * np.maximum(level, 0.0)) ** 2)
+        far = np.abs(z) > 4
+        jump_scale = float(np.abs(r[far]).mean()) if far.sum() >= 20 else 10 * sigma0
+        values[channel] = {
+            "dark": dark,
+            "sigma0": sigma0,
+            "kappa": kappa,
+            "jump_scale": jump_scale,
+        }
+        checks[channel] = {
+            "links": len(r),
+            "bright_links": int(bright.sum()),
+            "kappa_fitted": fitted_kappa,
+            "spread_dim": mad(z[~bright]) if (~bright).any() else None,
+            "spread_bright": mad(z[bright]) if bright.any() else None,
+            "jumps": int(far.sum()),
+        }
+        c = checks[channel]
+        print(
+            f"hint {channel}: dark {dark:.1f}, noise {sigma0:.2f} + {kappa:.3f} of the level above dark"
+            f"{'' if fitted_kappa else ' (the recipe value: too few bright cells to measure it)'}, "
+            f"jump size {jump_scale:.1f}; {c['links']} links, {c['bright_links']} bright; change over noise "
+            f"spreads {c['spread_dim'] if c['spread_dim'] is None else round(c['spread_dim'], 2)} (dim) and "
+            f"{c['spread_bright'] if c['spread_bright'] is None else round(c['spread_bright'], 2)} (bright)",
+            flush=True,
+        )
+    return values, checks
 
 
 def fit(trenches, rounds=3):
@@ -1682,6 +1946,12 @@ def fit(trenches, rounds=3):
     from pymmm.store.experiment_group import segmentation, update_experiment
 
     root = open_experiment(STORE)
+    channels = [str(c) for c in root["C"][:]] if HINT_CHANNELS else []
+    unknown = [c for c in HINT_CHANNELS if c not in channels]
+    if unknown:
+        sys.exit(
+            f"chain.py: {STORE.name} has no channel {', '.join(unknown)}; its channels are {', '.join(channels)}"
+        )
     # runs made before fits were recorded used the fit named after their segmentation
     used_by = [
         name
@@ -1713,8 +1983,11 @@ def fit(trenches, rounds=3):
         return 1.4826 * float(np.median(np.abs(np.asarray(v) - np.median(v))))
 
     # allow each trench 4 times its masks' size (a guess: the fit reads one hypothesis, and its
-    # memory was not measured)
-    workers = workers_for(len(labs), 4 * max((lab.nbytes for lab in labs), default=1))
+    # memory was not measured), and each hint channel's image
+    workers = workers_for(
+        len(labs),
+        (4 + len(HINT_CHANNELS)) * max((lab.nbytes for lab in labs), default=1),
+    )
     for r in range(rounds):
         tot = {
             "div": 0,
@@ -1728,11 +2001,11 @@ def fit(trenches, rounds=3):
             "jump": 0,
             "slide": 0,
         }
-        lens, gaps, divlen, growth, jumps = [], [], [], [], []
+        lens, gaps, divlen, growth, jumps, pairs = [], [], [], [], [], []
         start = time.perf_counter()
         # the trenches' statistics are gathered in the trenches' order, however many are tracked at once
-        for a, l, g, d, gr, ju in in_parallel(
-            fit_track, [(lab, dict(P)) for lab in labs], workers
+        for a, l, g, d, gr, ju, pa in in_parallel(
+            fit_track, [(lab, dict(P), t) for lab, t in zip(labs, used)], workers
         ):
             for k in tot:
                 tot[k] += a[k]
@@ -1741,6 +2014,7 @@ def fit(trenches, rounds=3):
             divlen += d
             growth += gr
             jumps += ju
+            pairs += pa
         if len(growth) > 100:
             P["growth"] = float(np.median(growth))
         if len(lens) > 100:
@@ -1756,6 +2030,20 @@ def fit(trenches, rounds=3):
             f"division {P['div_mu']:.1f} ± {P['div_sd']:.1f} px, jump scale {P['jump_scale_px']:.1f} px",
             flush=True,
         )
+    # the hints are measured on the last round's tracks, which the hints had no part in
+    hint = None
+    if HINT_CHANNELS:
+        if len(pairs) < 100:
+            sys.exit(
+                f"chain.py: only {len(pairs)} links to measure the hints on: fit on more trenches"
+            )
+        values, checks = fit_hints(pairs)
+        hint = {
+            "channels": HINT_CHANNELS,
+            "recipe": HINT_RECIPE,
+            "values": values,
+            "checks": checks,
+        }
     # a fresh handle, so records written to the store while this ran are kept
     update_experiment(
         open_experiment(STORE, mode="r+"),
@@ -1765,6 +2053,7 @@ def fit(trenches, rounds=3):
             "tracker": TRACKER,
             "segmentation": SEG,
             "values": fitted(),
+            **({"hint": hint} if hint else {}),
             "trenches": used,
             "frames": "all",
             "rounds": rounds,
@@ -1929,6 +2218,7 @@ def record_run(root):
             "params": json.loads(json.dumps(P, default=str)),
             "recipe": RECIPE,
             "fit": fit,
+            **({"hint": FIT_RECORD["hint"]} if FIT_RECORD.get("hint") else {}),
             "pixel_size_um": PX,
             "frame_interval_min": DT,
             "alternatives": alts,
@@ -1956,7 +2246,7 @@ def track_trench(tid):
         labs = [clean(np.asarray(labels[use[0]][...]))]
         labs += [Compressed(clean(np.asarray(labels[h][...]))) for h in use[1:]]
         start = time.perf_counter()
-        recs, side, frames = track(labs)
+        recs, side, frames = track(labs, hint_images(_ROOT, tid, labs[0].shape))
         seconds = time.perf_counter() - start
         write(_ROOT, tid, labs[0], recs, side, frames)
         return (
@@ -1984,7 +2274,7 @@ def track_all(trenches, root, of=None):
         # alternatives it reads, since those are kept compressed (measured: at most 2.0 GB for
         # 14 hypotheses of 1029 x 960 x 128 uint16, a worker tracking several trenches in turn)
         _names, labels = segmentation(root, trenches[0], SEG)
-        each = 0.5e9 + 6 * labels[0].nbytes
+        each = 0.5e9 + (6 + len(HINT_CHANNELS)) * labels[0].nbytes
         _WORKERS = workers_for(of or len(trenches), each)
         print(
             f"tracking {_WORKERS} trenches at a time (about {each / 1e9:.1f} GB each)",
@@ -2051,6 +2341,7 @@ if __name__ == "__main__":
         ("--fit", 1),
         ("--out", 1),
         ("--alts", 1),
+        ("--hint", 1),
         ("--base-only", 0),
         ("--workers", 1),
     ):
