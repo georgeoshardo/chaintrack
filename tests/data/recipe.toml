@@ -96,3 +96,11 @@ half_width_um = 0.65          # the images are taken this far either side of the
 # costs more. How much a cell's width changes in a frame is fitted; this is not.
 [width]
 p_mismatch = 0.01             # a mask of the wrong width costs at most -log of this
+
+# --- cells that come back: only for `fit --reentry`, ignored otherwise --------------------
+# A cell that leaves past the bottom is remembered for a while: if the column moves up, it may
+# come back into view as itself instead of as a new cell or a daughter of the cell above.
+[reentry]
+p_return = 0.05               # a remembered cell comes back on a mask: the price is -log of this
+max_away_min = 10.0           # it is forgotten after this long out of view
+max_away_cells = 4            # at most this many cells are remembered at once, the nearest

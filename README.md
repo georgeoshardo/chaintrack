@@ -66,6 +66,20 @@ Each cell carries its last image, and a mask costs more the less the image under
 that. `--hint` and `--pattern` can be given together. The recipe needs a `[pattern]` table;
 `tests/data/recipe.toml` has one.
 
+## Cells that come back
+
+Cells near the open end leave past the bottom of the image, and some come back when the column
+moves up. By default a cell that leaves is gone, so one that comes back has to be read as a new
+cell or a daughter of the cell above. With the recipe's `[reentry]` table and `fit --reentry`, a
+cell that leaves is remembered for a while, below the cells in view, and can come back as itself:
+
+    python chain.py fit 0-7 $S --recipe tests/data/recipe.toml --fit back --reentry
+    python chain.py run 0-99 $S --fit back --out chain_back
+
+The track then has one link over the frames the cell was out of view. Cells come back in the
+order they left, nearest first. A division whose lower daughter was past the bottom remembers
+that daughter too.
+
 ## Options
 
 | | |
@@ -76,6 +90,8 @@ that. `--hint` and `--pattern` can be given together. The recipe needs a `[patte
 | `--fit` | the fit's name in the store (default: the segmentation's name) |
 | `--hint a,b` | image channels to take intensity hints from (`fit` only) |
 | `--pattern a,b` | image channels to compare a cell's image in (`fit` only) |
+| `--width` | check that a cell's width stays as it was (`fit` only) |
+| `--reentry` | let cells that left past the bottom come back (`fit` only) |
 | `--out` | the run's name (default: `chain`) |
 | `--alts a,b` | use only these hypotheses as alternatives; `--base-only` uses none |
 | `--workers` | trenches tracked at once (default: as many as fit in the free memory) |

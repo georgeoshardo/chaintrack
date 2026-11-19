@@ -11,7 +11,10 @@ The trench is an ordered chain of cells from the closed end. Between frames:
     three frames without a mask; the cells below keep their gap to the last cell above with
     a mask, so a lysed or unseen cell's space is expected to stay, and the column closing
     over it is priced as a jump, not forbidden;
-  - no new cells appear after the first frame.
+  - no new cells appear after the first frame (with the recipe's [reentry] table, fit --reentry,
+    a cell that left past the bottom may come back into view when the column moves up: it is
+    remembered for max_away_min, nearest first, and comes back as itself, linked over the frames
+    it was out; a division whose lower daughter was past the bottom remembers that daughter too).
 The masks (shapes only, no image) are observations, cleaned first: any mask shorter
 than the smallest plausible newborn, (div_mu - 3 div_sd) / 2, is removed whole, and with
 the recipe's crop_bottom_um so is a mask with more than half its area in those bottom rows (for
@@ -148,7 +151,7 @@ def option(flag):
 
 
 USAGE = (
-    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--hint CHANNELS] [--pattern CHANNELS] [--width] [--workers N]\n"
+    "chain.py fit <trenches> --store <experiment>.zarr --seg <segmentation> --recipe <file> [--fit NAME] [--hint CHANNELS] [--pattern CHANNELS] [--width] [--reentry] [--workers N]\n"
     "chain.py run|follow <trenches> --store <experiment>.zarr --seg <segmentation> [--fit NAME] [--out RUN] [--workers N]"
 )
 # what to do: fit, run or follow
@@ -200,6 +203,14 @@ if COMMAND != "fit" and WIDTH:
     sys.exit(
         f"chain.py: {COMMAND} takes no --width: it follows the store's fit. To change it, fit again "
         "under a new name (fit ... --width --fit NAME) and track with --fit NAME"
+    )
+# cells that come back (fit --reentry): a cell that leaves past the bottom is remembered for a
+# while, and may come back into view if the column moves up, with a link over the frames it was out
+REENTRY = "--reentry" in sys.argv
+if COMMAND != "fit" and REENTRY:
+    sys.exit(
+        f"chain.py: {COMMAND} takes no --reentry: it follows the store's fit. To change it, fit again "
+        "under a new name (fit ... --reentry --fit NAME) and track with --fit NAME"
     )
 if COMMAND != "fit" and HINT is not None:
     sys.exit(
@@ -260,6 +271,12 @@ HINT_KEYS = {
     "background_from_um": ("bg_from", "whole px"),
     "background_to_um": ("bg_to", "whole px"),
 }
+# The recipe's optional [reentry] table, needed only by a fit with --reentry
+REENTRY_KEYS = {
+    "p_return": ("p_return", "same"),
+    "max_away_min": ("max_away", "frames"),
+    "max_away_cells": ("max_away_cells", "count"),
+}
 # The recipe's optional [width] table, needed only by a fit with --width
 WIDTH_KEYS = {"p_mismatch": ("p_mismatch", "same")}
 # The recipe's optional [pattern] table, needed only by a fit with --pattern
@@ -280,7 +297,9 @@ FIT_KEYS = {
 }
 
 
-def check_recipe(constants, start, where, hint=None, pattern=None, width=None):
+def check_recipe(
+    constants, start, where, hint=None, pattern=None, width=None, reentry=None
+):
     """Stop unless a recipe is one this chaintrack can use: every key there, none unknown, each a
     number (or true/false for a flag, a whole number for a count). start: its [fit_start] values,
     or None for a recipe that carries none (one frozen in a store). hint: its [hint] table, or
@@ -301,6 +320,7 @@ def check_recipe(constants, start, where, hint=None, pattern=None, width=None):
         + ((("hint.", hint, HINT_KEYS),) if hint is not None else ())
         + ((("pattern.", pattern, PATTERN_KEYS),) if pattern is not None else ())
         + ((("width.", width, WIDTH_KEYS),) if width is not None else ())
+        + ((("reentry.", reentry, REENTRY_KEYS),) if reentry is not None else ())
     ):
         problems += [f"unknown key {prefix}{k}" for k in table if k not in keys]
         problems += [f"missing key {prefix}{k}" for k in keys if k not in table]
@@ -323,8 +343,9 @@ def load_recipe(path):
     hint = raw.pop("hint", None)
     pattern = raw.pop("pattern", None)
     width = raw.pop("width", None)
-    check_recipe(raw, start, f"recipe {path}", hint, pattern, width)
-    return raw, start, hint, pattern, width
+    reentry = raw.pop("reentry", None)
+    check_recipe(raw, start, f"recipe {path}", hint, pattern, width, reentry)
+    return raw, start, hint, pattern, width, reentry
 
 
 def to_pixels(value, how):
@@ -382,9 +403,14 @@ PX, DT = calibration(open_experiment(STORE))  # µm per pixel, minutes per frame
 # the store's record of the fit: None until `fit` has run on this store
 FIT_RECORD = records(open_experiment(STORE), "fits").get(FIT)
 if COMMAND == "fit":
-    RECIPE, FIT_START, HINT_RECIPE, PATTERN_RECIPE, WIDTH_RECIPE = load_recipe(
-        RECIPE_FILE
+    RECIPE, FIT_START, HINT_RECIPE, PATTERN_RECIPE, WIDTH_RECIPE, REENTRY_RECIPE = (
+        load_recipe(RECIPE_FILE)
     )
+    if REENTRY and REENTRY_RECIPE is None:
+        sys.exit(
+            f"chain.py: --reentry needs the recipe's [reentry] table, and {RECIPE_FILE} has none "
+            "(tests/data/recipe.toml shows one)"
+        )
     if WIDTH and WIDTH_RECIPE is None:
         sys.exit(
             f"chain.py: --width needs the recipe's [width] table, and {RECIPE_FILE} has none "
@@ -493,6 +519,21 @@ else:
     WS = _width["values"]["spread"] if _width else None
     WP = _width["recipe"]["p_mismatch"] if _width else None
 
+# Cells that come back. RE: the recipe's [reentry] table in frames (None: a cell that leaves is
+# gone). Off while fitting, so that the fit measures sizes and spacing as it does without it.
+if COMMAND == "fit":
+    RE = None
+else:
+    _reentry = FIT_RECORD.get("reentry")
+    RE = (
+        {
+            p: to_pixels(_reentry["recipe"][k], how)
+            for k, (p, how) in REENTRY_KEYS.items()
+        }
+        if _reentry
+        else None
+    )
+
 MOVE = {
     "match": 0,
     "div": 1,
@@ -503,6 +544,7 @@ MOVE = {
     "exit": 6,
     "appear": 7,
     "div_one": 8,
+    "away": 9,
 }
 INF = 1e18
 
@@ -544,6 +586,8 @@ def align(
     sd1,
     maxr,
     appear,
+    away,
+    retc,
     force,
 ):
     """Order-preserving alignment of n predicted cells to a frame's masks. The masks form a graph
@@ -552,7 +596,9 @@ def align(
     (for a division or a cell cut into two masks; sd and so are indexed by that position), and
     end_ok[s] says whether the frame's masks may end there. Search state (i cells, s, a = 1 + the
     last cell given a mask, 0 if none yet). Spacing is judged against the mask of that cell (or
-    the closed end); size by the move's own terms.
+    the closed end); size by the move's own terms. Cells with away[i] > 0 left past the bottom
+    and come last, nearest first: each either stays away, or comes back into view on a mask
+    (paying retc) when the cell before it has a mask, so they come back in the order they left.
     """
     n = sm.shape[0]
     S = end_ok.shape[0]
@@ -589,6 +635,18 @@ def align(
                             sp = mix(otop[j] - pt, sig_gap, p_jump, rng)
                             if abs(otop[j] - pt) > maxr[i]:
                                 sp = INF
+                        if away[i] > 0:
+                            # a cell that left comes back: only as itself, on one mask
+                            if (i == 0 or a == i) and (f < 0 or f == 0):
+                                c = c0 + sp + sm[i, j] + retc
+                                if c < dp[i + 1, j + 1, i + 1]:
+                                    dp[i + 1, j + 1, i + 1] = c
+                                    bc[i + 1, j + 1, i + 1] = 0
+                                    bi[i + 1, j + 1, i + 1] = i
+                                    bs[i + 1, j + 1, i + 1] = s
+                                    ba[i + 1, j + 1, i + 1] = a
+                                    bm[i + 1, j + 1, i + 1] = j
+                            continue
                         # match
                         if f < 0 or f == 0:
                             c = c0 + sp + sm[i, j] + nodiv[i]
@@ -635,6 +693,7 @@ def align(
                         # two cells in one mask
                         if (
                             i + 1 < n
+                            and away[i + 1] == 0
                             and (f < 0 or f == 3)
                             and (force[i + 1] < 0 or force[i + 1] == 3)
                         ):
@@ -646,42 +705,51 @@ def align(
                                 bs[i + 2, j + 1, i + 2] = s
                                 ba[i + 2, j + 1, i + 2] = a
                                 bm[i + 2, j + 1, i + 2] = j
-                    # no mask for cell i
-                    if not gone:
-                        if f < 0 or f == 4:
-                            c = c0 + missc[i] + nodiv[i]
-                            if c < dp[i + 1, s, a]:
-                                dp[i + 1, s, a] = c
-                                bc[i + 1, s, a] = 4
-                                bi[i + 1, s, a] = i
-                                bs[i + 1, s, a] = s
-                                ba[i + 1, s, a] = a
-                    near_bottom = (
-                        ptop[i] + 2 * plen[i] >= H
-                    )  # its own prediction, not one pushed by a jump above
-                    if (not gone or not near_bottom) and (f < 0 or f == 5):
-                        c = c0 + lysisc
-                        if c < dp[i + 1, s, a]:
-                            dp[i + 1, s, a] = c
-                            bc[i + 1, s, a] = 5
+                    if away[i] > 0:
+                        # still away
+                        if c0 < dp[i + 1, s, a]:
+                            dp[i + 1, s, a] = c0
+                            bc[i + 1, s, a] = 9
                             bi[i + 1, s, a] = i
                             bs[i + 1, s, a] = s
                             ba[i + 1, s, a] = a
-                    if (f < 0 or f == 6) and near_bottom:
-                        if gone:
-                            ec = 0.0
-                        elif pt + plen[i] >= H:
-                            ec = 1.0 if H - pt < 0.6 * plen[i] else 3.0
-                        else:
-                            ec = INF
-                        if ec < INF:
-                            c = c0 + ec
+                    else:
+                        # no mask for cell i
+                        if not gone:
+                            if f < 0 or f == 4:
+                                c = c0 + missc[i] + nodiv[i]
+                                if c < dp[i + 1, s, a]:
+                                    dp[i + 1, s, a] = c
+                                    bc[i + 1, s, a] = 4
+                                    bi[i + 1, s, a] = i
+                                    bs[i + 1, s, a] = s
+                                    ba[i + 1, s, a] = a
+                        near_bottom = (
+                            ptop[i] + 2 * plen[i] >= H
+                        )  # its own prediction, not one pushed by a jump above
+                        if (not gone or not near_bottom) and (f < 0 or f == 5):
+                            c = c0 + lysisc
                             if c < dp[i + 1, s, a]:
                                 dp[i + 1, s, a] = c
-                                bc[i + 1, s, a] = 6
+                                bc[i + 1, s, a] = 5
                                 bi[i + 1, s, a] = i
                                 bs[i + 1, s, a] = s
                                 ba[i + 1, s, a] = a
+                        if (f < 0 or f == 6) and near_bottom:
+                            if gone:
+                                ec = 0.0
+                            elif pt + plen[i] >= H:
+                                ec = 1.0 if H - pt < 0.6 * plen[i] else 3.0
+                            else:
+                                ec = INF
+                            if ec < INF:
+                                c = c0 + ec
+                                if c < dp[i + 1, s, a]:
+                                    dp[i + 1, s, a] = c
+                                    bc[i + 1, s, a] = 6
+                                    bi[i + 1, s, a] = i
+                                    bs[i + 1, s, a] = s
+                                    ba[i + 1, s, a] = a
                 for q in range(sptr[s], sptr[s + 1]):  # a mask no cell explains
                     j = sidx[q]
                     c = c0 + appear
@@ -714,6 +782,7 @@ def align(
 
 class Hyp:
     __slots__ = (
+        "away",
         "born",
         "hint",
         "ids",
@@ -742,7 +811,10 @@ class Hyp:
         hint=None,
         pat=None,
         wid=None,
+        away=None,
     ):
+        # per cell, the frames since it left past the bottom (0 while in view; None: none can come back)
+        self.away = away
         self.wid = wid  # per cell, its last width (None: no width check)
         self.pat = (
             pat  # per cell, its last image in each pattern channel (None: no patterns)
@@ -1656,6 +1728,8 @@ def costs(h, frame, H, t):
         sd1,
         maxr,
         float(P["appear_cost"]),
+        np.asarray(h.away if h.away is not None else [0] * len(h.ids), np.int64),
+        float(-np.log(RE["p_return"])) if RE else 0.0,
     )
     return args, ptop, grown
 
@@ -1681,8 +1755,10 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         "appear": 0,
         "jump": 0,
         "slide": 0,
+        "return": 0,
     }
     lens, gaps, divlen, growth, jumps = [], [], [], [], []
+    away = []
     ref_bot, ref_cell = None, None  # mask bottom and cell of the last cell with a mask
 
     def seen(*js):
@@ -1706,7 +1782,8 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         area = np.array([obs[k][5] for k in js], float)
         return float((area * frame.width[list(js)]).sum() / area.sum())
 
-    def keep(cid, tp, L, par, b, u, tr, hv, pv=None, wv=None):
+    def keep(cid, tp, L, par, b, u, tr, hv, pv=None, wv=None, aw=0):
+        away.append(aw)
         hint.append(hv)
         pat.append(pv)
         wid.append(wv)
@@ -1737,6 +1814,8 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         if code == 0:
             o = obs[j]
             L = o[1] - o[0] + 1
+            if h.away is not None and h.away[i] > 0:
+                events["return"] += 1
             spacing(i, o[0])
             keep(
                 h.ids[i],
@@ -1857,6 +1936,36 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             events["lysis"] += 1
         elif code == 6:
             events["exit"] += 1
+            if RE:
+                # remembered past the bottom, below the cells in view, in case it comes back
+                keep(
+                    h.ids[i],
+                    where(i),
+                    grown[i],
+                    h.parent[i],
+                    h.born[i],
+                    1,
+                    True,
+                    h.hint[i] if hints else None,
+                    h.pat[i] if pats else None,
+                    h.wid[i] if wids else None,
+                    1,
+                )
+        elif code == 9:
+            if h.away[i] + 1 <= RE["max_away"]:
+                keep(
+                    h.ids[i],
+                    where(i),
+                    grown[i],
+                    h.parent[i],
+                    h.born[i],
+                    h.unseen[i] + 1,
+                    True,
+                    h.hint[i] if hints else None,
+                    h.pat[i] if pats else None,
+                    h.wid[i] if wids else None,
+                    h.away[i] + 1,
+                )
         elif code == 7:
             o = obs[j]
             c = new_id()
@@ -1883,12 +1992,35 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
             divisions.append((h.ids[i], c))
             lone.append(c)
             events["div_one"] += 1
+            if RE:
+                # the lower daughter, past the bottom: it too may come back
+                c2 = new_id()
+                keep(
+                    c2,
+                    o[1] + 1,
+                    o[0] + grown[i] - 1 - o[1],
+                    h.ids[i],
+                    t,
+                    1,
+                    True,
+                    h.hint[i] if hints else None,
+                    h.pat[i] if pats else None,
+                    h.wid[i] if wids else None,
+                    1,
+                )
+                divisions.append((h.ids[i], c2))
             # the cells below are placed after the lower daughter, past the mask
             ref_bot, ref_cell = o[0] + grown[i] - 1, i
-    # keep the chain in order (an appeared mask is placed by its position)
-    order = np.argsort(top, kind="stable")
-    cols = [ids, top, length, parent, born, unseen, trunc, hint, pat, wid]
-    ids, top, length, parent, born, unseen, trunc, hint, pat, wid = (
+    # keep the chain in order (an appeared mask is placed by its position), the cells away last,
+    # nearest first, and no more of those than the recipe allows
+    if RE:
+        order = np.lexsort((np.asarray(top), np.asarray(away) > 0))
+        n_in = sum(1 for k in away if k == 0)
+        order = order[: n_in + RE["max_away_cells"]]
+    else:
+        order = np.argsort(top, kind="stable")
+    cols = [ids, top, length, parent, born, unseen, trunc, hint, pat, wid, away]
+    ids, top, length, parent, born, unseen, trunc, hint, pat, wid, away = (
         [c[k] for k in order] for c in cols
     )
     rec = (
@@ -1922,6 +2054,7 @@ def apply(h, rows, frame, ptop, grown, t, cost, new_id, args=None):
         hint if hints else None,
         pat if pats else None,
         wid if wids else None,
+        away if RE else None,
     )
 
 
@@ -2143,6 +2276,7 @@ def track(labs, hint=None, pattern=None):
             [float(frames[first].width[j]) for j in frames[first].base]
             if WIDTHS
             else None,
+            [0] * len(o0) if RE else None,
         )
     ]
     for t in range(first + 1, T):
@@ -2168,6 +2302,7 @@ def stats_of(recs):
         "appear": 0,
         "jump": 0,
         "slide": 0,
+        "return": 0,
     }
     lens, gaps, divlen, growth, jumps, pairs, matches = [], [], [], [], [], [], []
     wpairs = []
@@ -2376,6 +2511,7 @@ def fit(trenches, rounds=3):
             "appear": 0,
             "jump": 0,
             "slide": 0,
+            "return": 0,
         }
         lens, gaps, divlen, growth, jumps, pairs, matches = [], [], [], [], [], [], []
         wpairs = []
@@ -2476,6 +2612,7 @@ def fit(trenches, rounds=3):
             **({"hint": hint} if hint else {}),
             **({"pattern": pattern} if pattern else {}),
             **({"width": width} if width else {}),
+            **({"reentry": {"recipe": REENTRY_RECIPE}} if REENTRY else {}),
             "trenches": used,
             "frames": "all",
             "rounds": rounds,
@@ -2556,7 +2693,15 @@ def write(root, tid, lab, recs, side, frames):
     # daughters whose sister went past the bottom unseen: their first nodes (GEFF ids: position + 1);
     # the mother's link to such a daughter is a division, though the graph shows a single child
     first = {cell: min(seq)[1] for cell, seq in by_cell.items()}
-    div_one = sorted(int(first[c]) + 1 for c in lone if c in first)
+    mother_of = {d: m for m, d in divisions}
+    seen_kids = {}
+    for m, d in divisions:
+        seen_kids[m] = seen_kids.get(m, 0) + (d in by_cell)
+    div_one = sorted(
+        int(first[c]) + 1
+        for c in lone
+        if c in first and seen_kids.get(mother_of.get(c), 0) < 2
+    )
     write_tracks(
         root,
         tid,
@@ -2643,6 +2788,7 @@ def record_run(root):
             **({"hint": FIT_RECORD["hint"]} if FIT_RECORD.get("hint") else {}),
             **({"pattern": FIT_RECORD["pattern"]} if FIT_RECORD.get("pattern") else {}),
             **({"width": FIT_RECORD["width"]} if FIT_RECORD.get("width") else {}),
+            **({"reentry": FIT_RECORD["reentry"]} if FIT_RECORD.get("reentry") else {}),
             "pixel_size_um": PX,
             "frame_interval_min": DT,
             "alternatives": alts,
@@ -2774,6 +2920,7 @@ if __name__ == "__main__":
         ("--hint", 1),
         ("--pattern", 1),
         ("--width", 0),
+        ("--reentry", 0),
         ("--base-only", 0),
         ("--workers", 1),
     ):
