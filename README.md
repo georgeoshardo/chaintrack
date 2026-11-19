@@ -54,6 +54,18 @@ a trench look alike in a channel, it has little to say. The fit measures how muc
 value changes from frame to frame and records the channels, so `run` takes no `--hint`. The recipe needs a `[hint]` table for this;
 `tests/data/recipe.toml` has one.
 
+## Pattern hints
+
+A cell looks like itself from one frame to the next, and seldom like its neighbour. chaintrack
+can use that too, in any channel; phase contrast works and needs no reporter:
+
+    python chain.py fit 0-7 $S --recipe tests/data/recipe.toml --fit look --pattern PC
+    python chain.py run 0-99 $S --fit look --out chain_look
+
+Each cell carries its last image, and a mask costs more the less the image under it resembles
+that. `--hint` and `--pattern` can be given together. The recipe needs a `[pattern]` table;
+`tests/data/recipe.toml` has one.
+
 ## Options
 
 | | |
@@ -63,6 +75,7 @@ value changes from frame to frame and records the channels, so `run` takes no `-
 | `--recipe` | the recipe file (`fit` only) |
 | `--fit` | the fit's name in the store (default: the segmentation's name) |
 | `--hint a,b` | image channels to take intensity hints from (`fit` only) |
+| `--pattern a,b` | image channels to compare a cell's image in (`fit` only) |
 | `--out` | the run's name (default: `chain`) |
 | `--alts a,b` | use only these hypotheses as alternatives; `--base-only` uses none |
 | `--workers` | trenches tracked at once (default: as many as fit in the free memory) |

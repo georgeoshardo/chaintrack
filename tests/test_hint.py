@@ -1,9 +1,10 @@
-"""Intensity hints: a channel's mean inside each mask, carried along each cell.
+"""Hints from the image: a channel's mean inside each mask (--hint), and how a cell looks in a
+channel (--pattern), each carried along each cell.
 
-A made-up trench of six cells of equal length and different brightness. At frame 30 the third
-cell lyses and the three below it move up by exactly one place. By size and spacing alone that
-looks like five cells staying put and the bottom one vanishing; the brightness of the masks says
-which cells they are.
+A made-up trench of eight cells of equal length and different brightness. At frame 30 the third
+cell lyses and the five below it move up by exactly one place. By size and spacing alone that
+looks like seven cells staying put and the bottom one vanishing; the brightness of the masks, or
+what the cells look like, says which cells they are.
 
     python -m pytest tests
 """
@@ -20,8 +21,8 @@ from pymmm.store import experiment_group as eg
 HERE = Path(__file__).parent
 CHAIN = HERE.parent / "chain.py"
 RECIPE = HERE / "data" / "recipe.toml"
-FRAMES, LYSIS, CELLS = 45, 30, 6
-LENGTH, PITCH, TOP, HEIGHT, WIDTH = 40, 44, 10, 300, 30
+FRAMES, LYSIS, CELLS = 45, 30, 8
+LENGTH, PITCH, TOP, HEIGHT, WIDTH = 40, 44, 10, 400, 30
 LEVELS = 100.0 + 60.0 * np.arange(CELLS)  # each cell's brightness in the channel "F"
 
 
@@ -43,12 +44,15 @@ def place(t, cell):
 
 @pytest.fixture(scope="module")
 def store(tmp_path_factory):
-    """The made-up trench as an experiment group: masks, and an image with the channels PC (empty),
-    F (each cell at its own level) and flat (the same level everywhere)."""
+    """The made-up trench as an experiment group: masks, and an image with the channels PC (each
+    cell with its own texture), F (each cell at its own level) and flat (the same level
+    everywhere)."""
     rng = np.random.default_rng(0)
     masks = np.zeros((FRAMES, HEIGHT, WIDTH), np.uint16)
     pixels = np.zeros((FRAMES, 3, HEIGHT, WIDTH), np.float32)
     pixels[:, 2] = 50.0 + rng.normal(0, 1, (FRAMES, HEIGHT, WIDTH))
+    pixels[:, 0] = rng.normal(0, 1, (FRAMES, HEIGHT, WIDTH))
+    texture = rng.normal(0, 10, (CELLS, LENGTH, 10))
     for t in range(FRAMES):
         for cell in range(CELLS):
             at = place(t, cell)
@@ -57,6 +61,7 @@ def store(tmp_path_factory):
             rows = slice(TOP + at * PITCH, TOP + at * PITCH + LENGTH)
             masks[t, rows, 10:20] = at + 1
             pixels[t, 1, rows, 10:20] = LEVELS[cell] + rng.normal(0, 2)
+            pixels[t, 0, rows, 10:20] += texture[cell]
     path = tmp_path_factory.mktemp("hint") / "test.zarr"
     root = zarr.open_group(str(path), mode="w", zarr_format=3)
     root.attrs["pymmm"] = {
@@ -79,6 +84,8 @@ def store(tmp_path_factory):
     for channel in ("F", "flat"):
         chain("fit", 0, *on, "--recipe", RECIPE, "--fit", channel, "--hint", channel)
         chain("run", 0, *on, "--fit", channel, "--out", channel)
+    chain("fit", 0, *on, "--recipe", RECIPE, "--fit", "look", "--pattern", "PC")
+    chain("run", 0, *on, "--fit", "look", "--out", "look")
     return path
 
 
@@ -109,7 +116,7 @@ def true_links():
 
 
 def test_the_masks_alone_follow_the_wrong_cells(store):
-    """Without a hint the tracker keeps the top five cells in place and loses the bottom one."""
+    """Without a hint the tracker keeps the top seven cells in place and loses the bottom one."""
     links = tracks(store, "plain")
     assert ((LYSIS - 1, 2), (LYSIS, 2)) in links
     assert links != true_links()
@@ -117,6 +124,13 @@ def test_the_masks_alone_follow_the_wrong_cells(store):
 
 def test_a_hint_follows_the_right_cells(store):
     assert tracks(store, "F") == true_links()
+
+
+def test_a_pattern_follows_the_right_cells(store):
+    """What the cells look like tells them apart with no difference in brightness."""
+    assert tracks(store, "look") == true_links()
+    fit = eg.records(eg.open_experiment(store), "fits")["look"]
+    assert fit["pattern"]["channels"] == ["PC"] and "hint" not in fit
 
 
 def test_a_flat_channel_changes_nothing(store):

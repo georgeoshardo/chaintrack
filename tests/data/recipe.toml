@@ -82,3 +82,11 @@ jump_scale_um = 2.16          # 20 px: typical size of a jump
 p_jump_per_min = 0.005        # a mask of the wrong brightness costs at most -log of this (over one frame): the price of a jump
 background_from_um = 0.0      # columns read as background, as distances from the trench's centre line, on each side;
 background_to_um = 0.0        # ... each mask's value is then its mean less their median over its rows. 0 and 0: no background
+
+# --- pattern hints: only for `fit --pattern CHANNELS`, ignored otherwise -----------------
+# A cell is expected to look like itself from one frame to the next: its image in each pattern
+# channel is correlated with the image under a mask. How alike a cell and its own next image are
+# is fitted per channel; these are not.
+[pattern]
+p_mismatch = 0.01             # an image unlike the cell's last one costs at most -log of this
+half_width_um = 0.65          # the images are taken this far either side of the trench's centre line
